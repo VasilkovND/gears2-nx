@@ -65,7 +65,8 @@ compilar() {
 }
 export -f compilar
 export DXC VAL salida
-ls "$salida"/hlsl/*.hlsl | xargs -P "$JOBS" -I{} bash -c 'compilar "$1"' _ {} > "$salida/spirv.log"
+# find, not ls with a glob: tens of thousands of files (Gears of War 2) exceed the argument list.
+find "$salida/hlsl" -name '*.hlsl' -print0 | sort -z | xargs -0 -P "$JOBS" -I{} bash -c 'compilar "$1"' _ {} > "$salida/spirv.log"
 echo "$(grep -c ' OK$' "$salida/spirv.log") OK, $(grep -vc ' OK$' "$salida/spirv.log") failed (see err/)"
 
 echo "== library"

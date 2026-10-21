@@ -6,9 +6,39 @@ Inferno, and every problem met on the way.
 
 ## Status (0.1.0)
 
-The build tools are ready and checked end to end without the game: codegen, the PC port's generated-code fixes, the
-Switch PCH, SDK patches and an NRO link were run on another executable (a dry run; nothing of it is kept). Nothing has
-been generated from Gears of War 2 yet: that needs the player's disc.
+First NRO built from the game (Europe disc), not run on a console yet.
+
+| Step | Result |
+| --- | --- |
+| Disc | Gears of War 2 (Europe) (En,Fr,De,Es,It,Zh,Ko,Pl,Ru,Cs,Hu): Media ID 33FCE762, XEX 0.0.0.6, `default.xex` sha256 `c110e168...`; 1,810 files, 6.2 GiB, streamed out of the .7z by `stage_sd.py` |
+| Codegen | The PC port's manifest and hints as they are; 223 units; `patch_switch_traps.py`: 511 traps, 0 unresolved branches left; 559 barrier fences, 12 spin pauses |
+| Shaders | 35,886 unique containers in the packages (34,486 PS, 1,400 VS); the default set (startup + SP_Hospital*) is 10,371: all translate and validate; 116 MB library, 79,726 DKSH variants (221 MB), 56 variants of 28 VS fail in uam |
+| Create hooks | `D3DDevice_CreateVertexShader` 0x829832E8 (exact match with DS2), `CreatePixelShader` 0x82982F20 (same shape) |
+
+### The Europe disc is the PC port's code
+
+The PC port supports 0.0.0.5 (63AF211E). The Europe disc is 0.0.0.6 with the same file time (2008-09-23). Its image
+run through the PC port's own tools (`harvest_hints.py` on the sections of the dumped image, `hint_fixpoint.py`,
+`find_orphan_gotos.py`, against a hint-free baseline codegen) gives all 175 of the PC port's harvested hints at the
+same addresses (plus 19 more, among them the PC port's three runtime-found ones), and exactly its five catch-funclet
+ends, three parent tail chunks and the tail call at 0x82D0C758. So the manifest is used unchanged.
+
+### Shaders without constant tables
+
+Unreal Engine 3 strips the D3D constant table from every shader (it binds constants by register itself), and
+XenosRecomp needed it for float constant names, bool constants and samplers. Now (`ShaderRecompiler::sinTabla`): float
+registers are read straight from the stage's uniform block (`g_C(i)` for relative reads), literal registers stay the
+shader's own, the 16 bool bits get names, and samplers come from a first pass that records every fetch constant and
+its dimension; the console takes them from the SPIR-V bindings (`SamplersDesdeSpirv`) and uploads the whole uniform
+block. Vertex shaders that declare one usage twice read one input.
+
+### Open
+
+- Two packages do not expand offline (`SP_Hospital_03`, `SP_Sinkhole_W`: an LZX error in one block; window and frame
+  padding ruled out). The game itself reads them with its own XMemDecompress, so this only means their shaders are
+  dumped on the console by the create hooks instead (`shaders_dump/`).
+- 28 vertex shaders index more than 16 manual vertex fetch descriptors (uam: "array index must be < 16").
+- The full set (all maps) would be ~470 MB of library: later, per-chapter sets or loading on demand.
 
 ## Where the code comes from
 

@@ -11,7 +11,7 @@ a homebrew NRO, and frames are drawn by a native deko3d renderer from the game's
 > You need your own copy of the game (the retail disc; no title update). This repository contains no game data or
 > game code: the code, the shaders and the NRO are all made on your computer from your copy.
 
-Status: **0.1.0, in development** — the build tools are ready; not built from the game or tested on a console yet.
+Status: **0.1.0, in development** — first NRO built from the Europe disc; not tested on a console yet.
 Installation: [INSTALL.md](INSTALL.md). Plan and porting notes: [gow2/PORTING.md](gow2/PORTING.md).
 
 ## Layout

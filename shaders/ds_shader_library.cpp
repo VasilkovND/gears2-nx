@@ -22,8 +22,8 @@
 namespace ds {
 namespace {
 constexpr std::array<uint8_t, 8> kFirma{'D','S','2','S','P','V',0,0};
-constexpr size_t kMaxArchivo = 64 * 1024 * 1024;
-constexpr size_t kMaxShaders = 4096;
+constexpr size_t kMaxArchivo = 512 * 1024 * 1024;  // Gears of War 2: 10,000+ shaders per set
+constexpr size_t kMaxShaders = 65536;
 constexpr size_t kMaxOriginal = 64 * 1024;
 constexpr size_t kMaxSpirv = 4 * 1024 * 1024;
 

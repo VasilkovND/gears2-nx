@@ -1,0 +1,12 @@
+--- a/src/ui/deko3d/cache_dksh.cpp	2026-10-21 22:46:06
++++ b/src/ui/deko3d/cache_dksh.cpp	2026-10-21 22:46:06
+@@ -21,7 +21,8 @@
+ constexpr uint32_t kVersion = 2;
+ constexpr size_t kCabecera = 32;
+ constexpr size_t kEntrada = 24;
+-constexpr uint32_t kMaxEntradas = 1u << 16;
++// Gears of War 2 ships ~100,000 variants (10,000+ shaders, nine pixel shader variants each).
++constexpr uint32_t kMaxEntradas = 1u << 18;
+ constexpr uint32_t kMaxDksh = 1u << 20;
+ 
+ uint32_t U32(const uint8_t* p) {

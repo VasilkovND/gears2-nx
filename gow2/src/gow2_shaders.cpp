@@ -1,6 +1,6 @@
 // gears2-nx - the shader library on the console (see gow2_shaders.h).
 //
-// Dead Space 2's containers are the 2008 format (XenosRecomp shader.h, signature 0x102A1100/1101): the shader
+// The containers are the 2008 format (XenosRecomp shader.h, signature 0x102A1100/1101): the shader
 // header is at +24, the microcode is `size` bytes at `physicalOffset`
 // of the physical part, the vertex elements follow the header at +0x24, the pixel shader outputs are at +0x1C.
 // The constant table is the same. All fields are big-endian.
@@ -110,8 +110,16 @@ const char* Leer(const ds::Shader& shader, EntradaShader& e) {
     e.salidas = c.U32(cabecera + 0x1C);
   }
 
+  // No constant table (Gears of War 2: Unreal Engine 3 strips it from every shader and sets constants by register).
+  // The translator then reads any float register from the uniform block, so the whole block is uploaded; the samplers
+  // come from the SPIR-V's bindings (SamplersDesdeSpirv, after this).
+  if (!tabla) {
+    e.constantes_bytes = (e.vertices ? 256u : 224u) * 16;
+    e.huella = XXH3_64bits(e.microcodigo.data(), e.microcodigo.size() * sizeof(uint32_t));
+    return nullptr;
+  }
   // Constant table: the float registers read and the samplers.
-  if (!tabla || !c.Hay(size_t(tabla) + 4, 28)) return "sin tabla de constantes";
+  if (!c.Hay(size_t(tabla) + 4, 28)) return "tabla de constantes fuera";
   const size_t base = size_t(tabla) + 4;
   const uint32_t constantes = c.U32(base + 12);
   const uint32_t info = c.U32(base + 16);
@@ -136,6 +144,33 @@ const char* Leer(const ds::Shader& shader, EntradaShader& e) {
   }
   e.huella = XXH3_64bits(e.microcodigo.data(), e.microcodigo.size() * sizeof(uint32_t));
   return nullptr;
+}
+
+// The samplers of a shader without a constant table: every texture of descriptor set 0 at bindings 0-15 (the
+// translator's sampler registers; 16-31 are the 2D pairs), typed by TiposDesdeSpirv afterwards.
+void SamplersDesdeSpirv(std::span<const uint32_t> spirv, std::vector<SamplerShader>& samplers) {
+  if (spirv.size() < 5 || spirv[0] != 0x07230203u) return;
+  std::unordered_map<uint32_t, uint32_t> binding, conjunto;
+  for (size_t i = 5; i < spirv.size();) {
+    const uint32_t palabras = spirv[i] >> 16, op = spirv[i] & 0xFFFF;
+    if (!palabras || i + palabras > spirv.size()) return;
+    const uint32_t* w = &spirv[i];
+    if (op == 71 && palabras >= 4 && w[2] == 33) binding[w[1]] = w[3];   // OpDecorate Binding
+    else if (op == 71 && palabras >= 4 && w[2] == 34) conjunto[w[1]] = w[3];  // OpDecorate DescriptorSet
+    i += palabras;
+  }
+  uint32_t vistos = 0;
+  for (const auto& [var, b] : binding) {
+    const auto c = conjunto.find(var);
+    if (c == conjunto.end() || c->second != 0 || b >= 16 || (vistos & (1u << b))) continue;
+    vistos |= 1u << b;
+    SamplerShader sampler;
+    sampler.registro = uint16_t(b);
+    sampler.tipo = 12;  // D3DXPT_SAMPLER2D until TiposDesdeSpirv says 3D or cube
+    samplers.push_back(sampler);
+  }
+  std::sort(samplers.begin(), samplers.end(),
+            [](const SamplerShader& a, const SamplerShader& b) { return a.registro < b.registro; });
 }
 
 // The dimension each texture binding really has in the SPIR-V: the translator makes a sampler a cube when every fetch
@@ -231,6 +266,9 @@ bool Biblioteca::Cargar(const std::filesystem::path& archivo) {
     if (const char* motivo = Leer(shaders[i], e)) {
       if (++ignorados <= 8) REXLOG_WARN("[shaders] container {} skipped: {}", i, motivo);
       continue;
+    }
+    if (e.samplers.empty() && shaders[i].original.size() >= 20 && Contenedor{shaders[i].original}.U32(16) == 0) {
+      SamplersDesdeSpirv(e.spirv, e.samplers);
     }
     TiposDesdeSpirv(e.spirv, e.samplers);
     if (!e.vertices) {
