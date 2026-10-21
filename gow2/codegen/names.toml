@@ -1,0 +1,16 @@
+# Names for the functions the Switch code hooks, added to the PC port's manifest (gears-of-war-2-pc-port's
+# gow2_manifest.toml) by tools/codegen.sh. Addresses are the retail executable's (Media ID 63AF211E, 0.0.0.5).
+#
+# Not filled in yet: they need your default.xex (tools/codegen.sh dumps its image; the XDK's Direct3D functions are
+# found by comparing bodies with Dead Space 2's and Dante's Inferno's recompiled code). Until then the shader library
+# still identifies each shader the ring loads by its microcode (src/gow2_shaders.h, steps 2-4).
+#
+# XDK Direct3D: every shader the game creates (src/gow2_shader_dump.cpp). The CMake build compiles those hooks only when
+# both names are here. Prefixed: the SDK exports stubs named __imp__D3DDevice_Create*Shader (xam_misc.cpp), and a bare
+# name would make the game's function that stub.
+#
+# [entrypoint.functions.0x82XXXXXX]
+# name = "gow2_D3DDevice_CreateVertexShader"
+#
+# [entrypoint.functions.0x82XXXXXX]
+# name = "gow2_D3DDevice_CreatePixelShader"
