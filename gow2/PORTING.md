@@ -33,6 +33,19 @@ been generated from Gears of War 2 yet: that needs the player's disc.
   its Windows-only guards may matter later: the runtime's UTF-8 decoder throwing on bad bytes in guest content names
   (`gow2_utf8_guard.cpp`) and the dirty-disc error box (`InstallDiscErrorSilencer`).
 
+## Title Update 6
+
+Three TU6 packages exist, one per retail executable: Media ID 63AF211E (0.0.0.5 -> 0.0.6.5), 33FCE762
+(0.0.0.6 -> 0.0.6.6) and 51D281BE (0.0.0.7 -> 0.0.6.7); `tools/stage_sd.py` knows their `default.xexp` hashes. Each
+holds a 2 MB `default.xexp` (code changes), UnrealScript patches (`Patches/ScriptPatch_{Engine,GearGame,IpDrv,
+OnlineSubsystemLive}.bin`, 236 KB for GearGame) and `TU__*` ini and localization files the game reads from `update:`
+(the SDK mounts `update_data_root` there).
+
+Not used yet: the PC port's manifest hints and fixes are for 0.0.0.5 without an update (TU6 is its open issue #13),
+and TU6 is mostly multiplayer balance and matchmaking. `stage_sd.py --tu` stages it in `tu6/`, apart from `game/`, for
+when the base game runs. Using it later means codegen on the patched image (rexglue applies a sibling `.xexp`), the
+hints found again for the new addresses, and `update_data_root` pointed at `tu6/`.
+
 ## Plan (from Dead Space 2's notes, section 7)
 
 1. **Memory**: SDK patch 0001 (commit granule) from the start: the game commits physical memory in small pieces, and

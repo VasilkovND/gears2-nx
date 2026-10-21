@@ -4,6 +4,7 @@
     python3 stage_sd.py --disc "Gears of War 2.iso" -o <out>/gears2-nx
     python3 stage_sd.py --folder <already extracted disc> -o <out>/gears2-nx
     python3 stage_sd.py --check <game folder>        (only the checks below)
+    python3 stage_sd.py --disc ... --tu <Title Update 6 package> -o <out>/gears2-nx   (also stages the update)
 
 Writes, beside where the NRO goes (src/gow2_app.h reads this layout):
     gears2-nx/game/   the extracted disc: default.xex and GearGame/ (no file is over FAT32's 4 GB)
@@ -11,8 +12,14 @@ Writes, beside where the NRO goes (src/gow2_app.h reads this layout):
 The same game/ folder is what tools/build_mac.sh takes to generate the code. The recompiled code is the retail
 executable's with no title update (the PC port it comes from, gears-of-war-2-pc-port, supports only that one):
 title ID 4D53082D, Media ID 63AF211E, XEX version 0.0.0.5. The executable's header is checked for those, and its
-SHA-256 against the ones tested (KNOWN_XEX) when there are any; the console never gets a title update here.
-Only the standard library.
+SHA-256 against the ones tested (KNOWN_XEX) when there are any.
+
+Title Update 6 (--tu): not used by the build yet. The PC port's hints are for the executable without it, and TU6 changes
+the code (default.xexp moves 0.0.0.5 to 0.0.6.5), so it waits until the base game runs. Staged apart, in
+gears2-nx/tu6/: its default.xexp and the files the game reads from update: (TU__*.ini and localization, and
+Patches/ScriptPatch_*.bin, UnrealScript fixes the engine loads). The package must be the one for the disc's Media ID:
+each of the three retail executables (0.0.0.5, 0.0.0.6, 0.0.0.7) has its own TU6.
+Only the standard library (the package is read by the small STFS reader below).
 """
 import argparse
 import hashlib
@@ -31,6 +38,12 @@ MAGIC = b"MICROSOFT*XBOX*MEDIA"
 # Disc files the game does not need: the console's system update.
 SKIP = ("$systemupdate/",)
 FAT32_MAX = (4 << 30) - 1
+# Title Update 6: default.xexp SHA-256 -> (Media ID, the executable version it patches, the version it makes).
+TU6 = {
+    "f219c7dc96a4f06b4fcb75441fa554e177a95c05a3196042c03b9da01583337a": (0x63AF211E, "0.0.0.5", "0.0.6.5"),
+    "83061c54922df83cc95684a7bd6fcea3192fe75fde17a066c5419b76bb78654d": (0x33FCE762, "0.0.0.6", "0.0.6.6"),
+    "1bff3aa272dda26736dd05eda8fb8bff58fd211cbaa10e8369d91809dad2899f": (0x51D281BE, "0.0.0.7", "0.0.6.7"),
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -153,6 +166,93 @@ def check_game(game: Path) -> None:
         sys.exit(f"{game}/default.xexp: this port runs the executable without a title update; remove it")
 
 
+class Stfs:
+    """The parts of an Xbox 360 STFS package (CON/LIVE/PIRS) needed to read one file from it."""
+
+    BLOCK = 0x1000
+
+    def __init__(self, path: Path):
+        self.f = open(path, "rb")
+        head = self.read(0, 0x3A0)
+        if head[:4] not in (b"CON ", b"LIVE", b"PIRS"):
+            sys.exit(f"{path} is not an Xbox 360 package (STFS)")
+        self.title_id = struct.unpack_from(">I", head, 0x360)[0]
+        header_size = struct.unpack_from(">I", head, 0x340)[0]
+        self.data = (header_size + 0xFFF) & ~0xFFF
+        volume = head[0x379:0x379 + 0x24]
+        # Read-only packages keep one hash table per level, the others two.
+        self.tables = 1 if volume[2] & 1 else 2
+        self.table_blocks = struct.unpack_from("<H", volume, 3)[0]
+        self.table_start = int.from_bytes(volume[5:8], "little")
+
+    def read(self, offset: int, n: int) -> bytes:
+        self.f.seek(offset)
+        return self.f.read(n)
+
+    def block(self, b: int) -> bytes:
+        # Data blocks are numbered without the hash table blocks between them: one level 0 table every 0xAA blocks,
+        # one level 1 every 0x70E4, one level 2 every 0x4AF768.
+        backing = b + (b + 0xAA) // 0xAA * self.tables
+        if b >= 0xAA:
+            backing += (b + 0x70E4) // 0x70E4 * self.tables
+            if b >= 0x70E4:
+                backing += (b + 0x4AF768) // 0x4AF768 * self.tables
+        return self.read(self.data + backing * self.BLOCK, self.BLOCK)
+
+    def entries(self) -> list:
+        out = []
+        for k in range(self.table_blocks):
+            table = self.block(self.table_start + k)
+            for i in range(0, self.BLOCK, 0x40):
+                e = table[i:i + 0x40]
+                if not e[0]:
+                    continue
+                flags = e[0x28]
+                out.append({"name": e[:flags & 0x3F].decode("latin-1"), "dir": bool(flags & 0x80),
+                            "contig": bool(flags & 0x40), "blocks": int.from_bytes(e[0x29:0x2C], "little"),
+                            "start": int.from_bytes(e[0x2F:0x32], "little"),
+                            "parent": struct.unpack_from(">h", e, 0x32)[0],
+                            "size": struct.unpack_from(">I", e, 0x34)[0]})
+        return out
+
+
+
+def stage_tu(package: Path, media_id: int, out: Path) -> None:
+    """Every file of the TU package, as the game sees update:, into out/; default.xexp checked against TU6."""
+    pkg = Stfs(package)
+    try:
+        if pkg.title_id != TITLE_ID:
+            sys.exit(f"{package} is not a Gears of War 2 package (title {pkg.title_id:08X})")
+        entries = pkg.entries()
+        files = {}
+        for e in entries:
+            if e["dir"]:
+                continue
+            parent = entries[e["parent"]]["name"] + "/" if 0 <= e["parent"] < len(entries) else ""
+            if "/" in e["name"] or "\\" in e["name"] or e["name"] in ("", ".", ".."):
+                sys.exit(f"Unsafe name in package: {e['name']!r}")
+            if not e["contig"]:
+                sys.exit(f"{parent}{e['name']} is fragmented in this package: not supported")
+            files[parent + e["name"]] = b"".join(pkg.block(e["start"] + k) for k in range(e["blocks"]))[:e["size"]]
+    finally:
+        pkg.f.close()
+    xexp = files.get("default.xexp")
+    if xexp is None:
+        sys.exit(f"{package} has no default.xexp")
+    known = TU6.get(hashlib.sha256(xexp).hexdigest())
+    if not known:
+        sys.exit(f"{package}: default.xexp is not one of the Title Update 6 packages this port knows")
+    if known[0] != media_id:
+        right = [k for k in TU6.values() if k[0] == media_id]
+        sys.exit(f"{package} is TU6 for Media ID {known[0]:08X}, but the disc is {media_id:08X}"
+                 + (f": use the package for {media_id:08X}" if right else ": no known TU6 for this disc"))
+    for name, data in files.items():
+        d = out / name
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.write_bytes(data)
+    print(f"  Title Update 6 ({known[1]} -> {known[2]}): {len(files)} files -> {out} (not used by the build yet)")
+
+
 def copy_folder(src: Path, dest: Path) -> None:
     n = 0
     for p in sorted(src.rglob("*")):
@@ -174,6 +274,7 @@ def main() -> None:
     src.add_argument("--disc", type=Path, help="the disc image (ISO)")
     src.add_argument("--folder", type=Path, help="an already extracted disc (default.xex and GearGame/)")
     src.add_argument("--check", type=Path, help="only check a game folder (tools/codegen.sh uses it)")
+    ap.add_argument("--tu", type=Path, help="Title Update 6 package for the disc's Media ID (staged in tu6/, unused yet)")
     ap.add_argument("-o", "--out", type=Path)
     a = ap.parse_args()
     if a.check:
@@ -190,6 +291,10 @@ def main() -> None:
         check_game(a.folder)
         copy_folder(a.folder, game)
     check_game(game)
+    if a.tu:
+        if not a.tu.is_file():
+            sys.exit(f"--tu: {a.tu} not found")
+        stage_tu(a.tu, xex_info(game / "default.xex")["media_id"], a.out / "tu6")
     print(f"Ready: copy {a.out} to sdmc:/switch/ (the NRO and the shader files go in it, beside game/).")
 
 
