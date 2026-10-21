@@ -3,6 +3,9 @@
 #include "shader.h"
 #include "shader_code.h"
 
+#include <deque>
+#include <unordered_set>
+
 struct StringBuffer
 {
     std::string out;
@@ -33,6 +36,15 @@ struct ShaderRecompiler : StringBuffer
     std::unordered_map<uint32_t, const char*> samplers;
     // Dimensions each sampler is fetched with (bit 1 << TextureDimension), to fix its deko3d binding at the end.
     std::unordered_map<std::string, uint32_t> dimensionesBuscadas;
+    // Containers without a constant table (Gears of War 2: Unreal Engine 3 strips it and sets constants by register).
+    // The float registers are read straight from the stage's uniform block (g_C for relative reads), the bool
+    // constants get one name per bit (g_Bool0-15), and the samplers come from samplersSinTabla: sampler register ->
+    // fetch dimensions (bit 1 << TextureDimension), which ds_hlsl gets from a first pass over the same shader
+    // (dimensionesBuscadas of names s<fetch constant>). literalesSinTabla: registers the shader defines itself.
+    bool sinTabla = false;
+    std::unordered_map<uint32_t, uint32_t> samplersSinTabla;
+    std::unordered_set<uint32_t> literalesSinTabla;
+    std::deque<std::string> nombresSinTabla;
     bool usaTfetchVertice = false;
     // A vertex fetch at a computed index (dsVfetch), and each element's position in the declaration by address.
     bool usaLecturaManual = false;
@@ -238,4 +250,6 @@ struct ShaderRecompiler : StringBuffer
     // The constants block: the float constants from the UBOs, and each sampler register as a texture and a
     // sampler at fixed bindings (shader_common.h). Text only: recompile() fills the maps above.
     void printDeko3dConstants(const ConstantTableContainer* constantTableContainer);
+    void printSampler(uint32_t reg, const char* constantName, const char* dimension);
+    void printSinTabla(const uint8_t* shaderData);
 };

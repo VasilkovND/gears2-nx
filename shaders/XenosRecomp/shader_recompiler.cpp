@@ -490,6 +490,16 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                         regFormatted = constantName;
                     }
                 }
+                else if (sinTabla)
+                {
+                    // No constant table: the register itself (a literal the shader defines, or the uniform block).
+                    if (relativa)
+                        regFormatted = fmt::format("g_C({}{})", reg, instr.constAddressRegisterRelative ? " + a0" : " + aL");
+                    else if (literalesSinTabla.count(reg))
+                        regFormatted = fmt::format("c{}", reg);
+                    else
+                        regFormatted = fmt::format("g_Ubo{}.v[{}]", isPixelShader ? "Pixel" : "Vertex", reg);
+                }
                 else
                 {
                     if (relativa)
@@ -1166,29 +1176,73 @@ void ShaderRecompiler::printDeko3dConstants(const ConstantTableContainer* consta
             default:
                 break;
             }
-
-            if (reg >= 16)
-                println("#error \"{}: sampler register {} has no deko3d binding (0-15)\"", constantName, reg);
-
-            println("[[vk::binding({}, 0)]] Texture{}<float4> {}_Textura;", reg, dimension, constantName);
-            println("[[vk::binding({}, 1)]] SamplerState {}_Muestreo;", reg, constantName);
-            println("#define {0}_Texture{1}DescriptorIndex {0}_Textura", constantName, dimension);
-            println("#define {0}_SamplerDescriptorIndex {0}_Muestreo", constantName);
-            if (strcmp(dimension, "2D") == 0)
-            {
-                // tfetch2DSombraMin's pair arrives in the 3D index word of the same register.
-                println("[[vk::binding({}, 0)]] Texture2D<float4> {}_Pareja;", 16 + reg, constantName);
-                println("#define {0}_Texture3DDescriptorIndex {0}_Pareja", constantName);
-            }
-
-            const uint32_t invBase = 360 + reg * 8;
-            println("#define {}_InvTamano float2(DS_COMPARTIDA_FLOAT({}), DS_COMPARTIDA_FLOAT({}))",
-                constantName, invBase, invBase + 4);
+            printSampler(reg, constantName, dimension);
             break;
         }
 
         default:
             break;
+        }
+    }
+}
+
+// One sampler register's deko3d bindings (printDeko3dConstants and printSinTabla).
+void ShaderRecompiler::printSampler(uint32_t reg, const char* constantName, const char* dimension)
+{
+    if (reg >= 16)
+        println("#error \"{}: sampler register {} has no deko3d binding (0-15)\"", constantName, reg);
+
+    println("[[vk::binding({}, 0)]] Texture{}<float4> {}_Textura;", reg, dimension, constantName);
+    println("[[vk::binding({}, 1)]] SamplerState {}_Muestreo;", reg, constantName);
+    println("#define {0}_Texture{1}DescriptorIndex {0}_Textura", constantName, dimension);
+    println("#define {0}_SamplerDescriptorIndex {0}_Muestreo", constantName);
+    if (strcmp(dimension, "2D") == 0)
+    {
+        // tfetch2DSombraMin's pair arrives in the 3D index word of the same register.
+        println("[[vk::binding({}, 0)]] Texture2D<float4> {}_Pareja;", 16 + reg, constantName);
+        println("#define {0}_Texture3DDescriptorIndex {0}_Pareja", constantName);
+    }
+
+    const uint32_t invBase = 360 + reg * 8;
+    println("#define {}_InvTamano float2(DS_COMPARTIDA_FLOAT({}), DS_COMPARTIDA_FLOAT({}))",
+        constantName, invBase, invBase + 4);
+}
+
+// The declarations a container without a constant table needs (see sinTabla in the header).
+void ShaderRecompiler::printSinTabla(const uint8_t* shaderData)
+{
+    const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
+    const char* stage = isPixelShader ? "Pixel" : "Vertex";
+    const uint32_t registros = isPixelShader ? 224 : 256;
+    println("#define g_C(INDEX) select((INDEX) < {0}, g_Ubo{1}.v[min(INDEX, {2})], 0.0)", registros, stage, registros - 1);
+    for (uint32_t i = 0; i < 16; i++)
+    {
+        const std::string& nombre = nombresSinTabla.emplace_back(fmt::format("g_Bool{}", i));
+        println("#define {} (1 << {})", nombre, i + (isPixelShader ? 16 : 0));
+        boolConstants.emplace(i + (isPixelShader ? 128 : 0), nombre.c_str());
+    }
+    for (const auto& [reg, dimensiones] : samplersSinTabla)
+    {
+        const char* dimension = "2D";
+        if (dimensiones == (1u << uint32_t(TextureDimension::Texture3D)))
+            dimension = "3D";
+        else if (dimensiones == (1u << uint32_t(TextureDimension::TextureCube)))
+            dimension = "Cube";
+        const std::string& nombre = nombresSinTabla.emplace_back(fmt::format("g_S{}", reg));
+        samplers.emplace(reg, nombre.c_str());
+        printSampler(reg, nombre.c_str(), dimension);
+    }
+    // The registers the shader defines itself (its definition table) stay its own literals c<N>.
+    if (shaderContainer->definitionTableOffset != NULL)
+    {
+        auto definitionTable = reinterpret_cast<const DefinitionTable*>(shaderData + shaderContainer->definitionTableOffset);
+        auto definitions = definitionTable->definitions;
+        while (*definitions != 0)
+        {
+            auto definition = reinterpret_cast<const Float4Definition*>(definitions);
+            for (uint16_t i = 0; i < (definition->count + 3) / 4; i++)
+                literalesSinTabla.insert(definition->registerIndex + i - (isPixelShader ? 256 : 0));
+            definitions += 2;
         }
     }
 }
@@ -1258,7 +1312,6 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      * compared.
      */
     assert((shaderContainer->flags & 0xFFFF0000) == 0x102A0000);
-    assert(shaderContainer->constantTableOffset != NULL);
 
     out += include;
     out += '\n';
@@ -1267,41 +1320,49 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     isPixelShader = (shaderContainer->flags & 0x1) == 0;
 
-    const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
-    constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
-
-    for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
+    sinTabla = shaderContainer->constantTableOffset == NULL;
+    if (sinTabla)
     {
-        const auto constantInfo = reinterpret_cast<const ConstantInfo*>(
-            constantTableData + constantTableContainer->constantTable.constantInfo + i * sizeof(ConstantInfo));
-
-        const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
-
-        if (constantInfo->registerSet == RegisterSet::Float4)
-        {
-            for (uint16_t j = 0; j < constantInfo->registerCount; j++)
-                float4Constants.emplace(constantInfo->registerIndex + j, constantInfo);
-        }
-        else if (constantInfo->registerSet == RegisterSet::Sampler)
-        {
-            samplers.emplace(constantInfo->registerIndex, constantName);
-        }
+        printSinTabla(shaderData);
     }
-
-    printDeko3dConstants(constantTableContainer);
-
-    for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
+    else
     {
-        const auto constantInfo = reinterpret_cast<const ConstantInfo*>(
-            constantTableData + constantTableContainer->constantTable.constantInfo + i * sizeof(ConstantInfo));
+        const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
+        constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
 
-        if (constantInfo->registerSet == RegisterSet::Bool)
+        for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
         {
+            const auto constantInfo = reinterpret_cast<const ConstantInfo*>(
+                constantTableData + constantTableContainer->constantTable.constantInfo + i * sizeof(ConstantInfo));
+
             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
-            println("\t#define {} (1 << {})", constantName, constantInfo->registerIndex + (isPixelShader ? 16 : 0));
-            // The CTAB numbers b0.. and CF uses 128.. for pixels.
-            // The g_Booleans packing keeps its 16 bits per stage.
-            boolConstants.emplace(constantInfo->registerIndex + (isPixelShader ? 128 : 0), constantName);
+
+            if (constantInfo->registerSet == RegisterSet::Float4)
+            {
+                for (uint16_t j = 0; j < constantInfo->registerCount; j++)
+                    float4Constants.emplace(constantInfo->registerIndex + j, constantInfo);
+            }
+            else if (constantInfo->registerSet == RegisterSet::Sampler)
+            {
+                samplers.emplace(constantInfo->registerIndex, constantName);
+            }
+        }
+
+        printDeko3dConstants(constantTableContainer);
+
+        for (uint32_t i = 0; i < constantTableContainer->constantTable.constants; i++)
+        {
+            const auto constantInfo = reinterpret_cast<const ConstantInfo*>(
+                constantTableData + constantTableContainer->constantTable.constantInfo + i * sizeof(ConstantInfo));
+
+            if (constantInfo->registerSet == RegisterSet::Bool)
+            {
+                const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
+                println("\t#define {} (1 << {})", constantName, constantInfo->registerIndex + (isPixelShader ? 16 : 0));
+                // The CTAB numbers b0.. and CF uses 128.. for pixels.
+                // The g_Booleans packing keeps its 16 bits per stage.
+                boolConstants.emplace(constantInfo->registerIndex + (isPixelShader ? 128 : 0), constantName);
+            }
         }
     }
 
@@ -1347,6 +1408,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
 
+            // The same usage and index twice (Gears of War 2's vertex factories fetch one stream element from two
+            // places): D3D binds one declaration element to both fetches, so the second reads the same input.
+            bool repetido = false;
+            for (const auto& [direccion, anterior] : vertexElements)
+                if (anterior.usage == vertexElement.usage && anterior.usageIndex == vertexElement.usageIndex)
+                    repetido = true;
+            if (repetido)
+            {
+                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                elementOrdinal.emplace(uint32_t(vertexElement.address), i);
+                continue;
+            }
 
             out += '\t';
 

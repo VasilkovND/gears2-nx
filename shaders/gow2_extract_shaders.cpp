@@ -119,7 +119,11 @@ bool Expand(const uint8_t* d, size_t n, std::vector<uint8_t>& out) {
     if (!lzx) return false;
     const int r = lzxd_decompress(lzx, usize);
     lzxd_free(lzx);
-    if (r != MSPACK_ERR_OK || dst.pos != usize) return false;
+    if (r != MSPACK_ERR_OK || dst.pos != usize) {
+      std::fprintf(stderr, "  LZX block %u of %u: error %d, %zu of %u bytes (compressed %u)\n", b, blocks, r, dst.pos, usize,
+                   csize);
+      return false;
+    }
     data += csize;
     at += usize;
   }

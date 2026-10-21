@@ -30,8 +30,8 @@ BARRIERS="${BARRIERS:-1}"
 
 GOW2_PC_COMMIT="19d9e79313c21b8d61de61d64d517f5c9e5220e6"   # 2026-10-20, v0.2.5
 REXGLUE_TAG="v0.10.0"
-# SHA-256 of the default.xex dumps the port was tested with (empty: none yet; tools/stage_sd.py checks the header).
-XEX_SHA=""
+# SHA-256 of the default.xex dump the port was tested with (tools/stage_sd.py checks the header for the others).
+XEX_SHA="c110e168abd4518c510f8358723343e129aed17eea73fe12010b8a0cd0a73bb8"   # Europe disc, 33FCE762 0.0.0.6
 
 [ -f "$GAME/default.xex" ] || { echo "$GAME/default.xex not found"; exit 1; }
 [ -f "$GAME/default.xexp" ] && { echo "$GAME/default.xexp: this port is for the executable without a title update"; exit 1; }

@@ -2,6 +2,7 @@
 """Make the SD card folder for gears2-nx from your own Gears of War 2 disc.
 
     python3 stage_sd.py --disc "Gears of War 2.iso" -o <out>/gears2-nx
+    python3 stage_sd.py --disc "Gears of War 2.7z" -o <out>/gears2-nx      (the ISO streamed out of the 7z: no copy)
     python3 stage_sd.py --folder <already extracted disc> -o <out>/gears2-nx
     python3 stage_sd.py --check <game folder>        (only the checks below)
     python3 stage_sd.py --disc ... --tu <Title Update 6 package> -o <out>/gears2-nx   (also stages the update)
@@ -10,9 +11,10 @@ Writes, beside where the NRO goes (src/gow2_app.h reads this layout):
     gears2-nx/game/   the extracted disc: default.xex and GearGame/ (no file is over FAT32's 4 GB)
 
 The same game/ folder is what tools/build_mac.sh takes to generate the code. The recompiled code is the retail
-executable's with no title update (the PC port it comes from, gears-of-war-2-pc-port, supports only that one):
-title ID 4D53082D, Media ID 63AF211E, XEX version 0.0.0.5. The executable's header is checked for those, and its
-SHA-256 against the ones tested (KNOWN_XEX) when there are any.
+executable's with no title update (the PC port it comes from, gears-of-war-2-pc-port, supports that one):
+title ID 4D53082D, Media ID 63AF211E, XEX version 0.0.0.5, or the Europe disc's 33FCE762 0.0.0.6, which has the same
+code (MEDIA_IDS below). The executable's header is checked for those, and its SHA-256 against the ones tested
+(KNOWN_XEX).
 
 Title Update 6 (--tu): not used by the build yet. The PC port's hints are for the executable without it, and TU6 changes
 the code (default.xexp moves 0.0.0.5 to 0.0.6.5), so it waits until the base game runs. Staged apart, in
@@ -25,14 +27,21 @@ import argparse
 import hashlib
 import shutil
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
 TITLE_ID = 0x4D53082D
-MEDIA_ID = 0x63AF211E
-VERSION = "0.0.0.5"
+# Retail executables whose code is the PC port's: Media ID -> version. 0.0.0.6 (the Europe disc) has the same code at
+# the same addresses as 0.0.0.5: all 175 of the PC port's harvested hints, its catch-funclet ends, tail chunks and
+# tail call were found again in it by the PC port's own tools (harvest_hints.py, hint_fixpoint.py,
+# find_orphan_gotos.py) at the same addresses. 0.0.0.7 (51D281BE) has not been checked.
+MEDIA_IDS = {0x63AF211E: "0.0.0.5", 0x33FCE762: "0.0.0.6"}
 # SHA-256 of default.xex dumps this port was built and tested with -> where it came from.
-KNOWN_XEX: dict = {}
+KNOWN_XEX = {
+    "c110e168abd4518c510f8358723343e129aed17eea73fe12010b8a0cd0a73bb8":
+        "Gears of War 2 (Europe) (En,Fr,De,Es,It,Zh,Ko,Pl,Ru,Cs,Hu), Media ID 33FCE762, 0.0.0.6",
+}
 SECTOR = 2048
 MAGIC = b"MICROSOFT*XBOX*MEDIA"
 # Disc files the game does not need: the console's system update.
@@ -119,6 +128,145 @@ def extract(iso: Path, out: Path) -> None:
         print(f"\r  {iso.name}: {len(files)} files, {total / 2**30:.1f} GiB -> {out}")
 
 
+# --- The same, streamed out of a .7z (no ISO on disk) ---------------------------------------------------------
+def _entries(table: bytes):
+    """(is_dir, start sector, size, name) of every entry of one directory table."""
+    pending, seen = [0], set()
+    while pending:
+        o = pending.pop()
+        p = o * 4
+        if o in seen or p + 14 > len(table):
+            continue
+        seen.add(o)
+        left, right, start, length, attr, nlen = struct.unpack("<HHIIBB", table[p:p + 14])
+        if left == 0xFFFF:
+            continue
+        name = table[p + 14:p + 14 + nlen].decode("latin1")
+        if left:
+            pending.append(left)
+        if right:
+            pending.append(right)
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            sys.exit(f"Unsafe name on disc: {name!r}")
+        yield bool(attr & 0x10), start, length, name
+
+
+def _image_chunks(archive: Path):
+    """Decompresses the archive's one .iso to a pipe and yields (offset, chunk): one pass over the image."""
+    tool = shutil.which("7zz") or shutil.which("7z")
+    if not tool:
+        sys.exit("A .7z needs 7-Zip: brew install sevenzip")
+    listing = subprocess.run([tool, "l", "-slt", str(archive)], capture_output=True, text=True).stdout
+    names = [l[7:] for l in listing.splitlines() if l.startswith("Path = ") and l.lower().endswith(".iso")]
+    if len(names) != 1:
+        sys.exit(f"{archive}: expected one .iso inside, found {len(names)}")
+    proc = subprocess.Popen([tool, "e", "-so", str(archive), names[0]], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    pos = 0
+    try:
+        while True:
+            chunk = proc.stdout.read(16 << 20)
+            if not chunk:
+                break
+            yield pos, chunk
+            pos += len(chunk)
+    finally:
+        proc.stdout.close()
+        proc.wait()
+
+
+def extract_7z(archive: Path, out: Path) -> None:
+    """XDVDFS read front to back: the directory tables are collected first (more passes only if a table sits before
+    the directory that points at it), then one more pass writes each file as its sectors go by."""
+    base = None
+    root = None
+    tables = {}      # sector -> table bytes
+    wanted = {}      # sector -> [size, bytearray or None while not started]
+    for n in range(1, 9):
+        print(f"  {archive.name}: directory, pass {n}")
+        for pos, chunk in _image_chunks(archive):
+            end = pos + len(chunk)
+            if base is None:
+                for b in (0x0, 0x2080000, 0xFD90000, 0x18300000):
+                    at = b + 32 * SECTOR
+                    if pos <= at and at + 28 <= end and chunk[at - pos:at - pos + 20] == MAGIC:
+                        base = b
+                        root, size = struct.unpack_from("<II", chunk, at - pos + 20)
+                        wanted[root] = [size, None]
+            if base is None:
+                continue
+            found = True
+            while found:  # a table read here may point at another later in this same chunk
+                found = False
+                for sector, w in list(wanted.items()):
+                    lo, size = base + sector * SECTOR, w[0]
+                    if w[1] is None:
+                        if not pos <= lo < end:
+                            continue
+                        w[1] = bytearray()
+                    have = lo + len(w[1])
+                    if have >= end:
+                        continue
+                    w[1].extend(chunk[have - pos:min(lo + size, end) - pos])
+                    if len(w[1]) == size:
+                        tables[sector] = bytes(w[1])
+                        del wanted[sector]
+                        for is_dir, start, length, _ in _entries(tables[sector]):
+                            if is_dir and length and start not in tables:
+                                wanted[start] = [length, None]
+                        found = True
+        if base is None:
+            sys.exit(f"{archive}: not an Xbox 360 disc image (no XDVDFS volume found)")
+        if not wanted:
+            break
+        for w in wanted.values():
+            w[1] = None  # started too late in this pass: read again from its start
+    else:
+        sys.exit(f"{archive}: directory tables not all found")
+
+    def walk_tables(sector, prefix):
+        for is_dir, start, length, name in _entries(tables[sector]):
+            path = prefix + name
+            if is_dir:
+                if length:
+                    yield from walk_tables(start, path + "/")
+            elif not path.lower().startswith(SKIP):
+                yield base + start * SECTOR, length, path
+
+    files = sorted(walk_tables(root, ""))
+    total = sum(n for _, n, _ in files)
+    todo = [(o, n, p) for o, n, p in files if not ((out / p).is_file() and (out / p).stat().st_size == n)]
+    print(f"  {len(files)} files, {total / 2**30:.1f} GiB ({len(todo)} to write): one more pass")
+    handles, done, first = {}, 0, 0
+    if todo:
+        for pos, chunk in _image_chunks(archive):
+            end = pos + len(chunk)
+            for o, n, p in todo[first:]:
+                if o >= end:
+                    break
+                if o + n <= pos:
+                    continue
+                a, b = max(o, pos), min(o + n, end)
+                h = handles.get(p)
+                if h is None:
+                    (out / p).parent.mkdir(parents=True, exist_ok=True)
+                    h = handles[p] = (out / p).open("wb")
+                h.write(chunk[a - pos:b - pos])
+                done += b - a
+                if b == o + n:
+                    h.close()
+                    del handles[p]
+            while first < len(todo) and todo[first][0] + todo[first][1] <= end:
+                first += 1
+            print(f"\r  {done * 100 // max(sum(n for _, n, _ in todo), 1)}%", end="", flush=True)
+        for h in handles.values():
+            h.close()
+    for o, n, p in files:
+        if not (out / p).is_file() or (out / p).stat().st_size != n:
+            sys.exit(f"\n{p}: incomplete")
+    print(f"\r  {archive.name}: {len(files)} files -> {out}")
+
+
 # --- XEX header --------------------------------------------------------------------------------------------
 def xex_info(path: Path) -> dict:
     """Title ID, Media ID and version from the XEX2 header's execution info (optional header 0x00040006)."""
@@ -152,9 +300,10 @@ def check_game(game: Path) -> None:
     info = xex_info(xex)
     if info["title_id"] != TITLE_ID:
         sys.exit(f"default.xex is title {info['title_id']:08X}, not Gears of War 2 ({TITLE_ID:08X})")
-    if info["media_id"] != MEDIA_ID or info["version"] != VERSION:
-        sys.exit(f"default.xex is Media ID {info['media_id']:08X} version {info['version']}; this port needs the retail "
-                 f"disc's executable, Media ID {MEDIA_ID:08X} version {VERSION} (the PC port's code only matches that one)")
+    if MEDIA_IDS.get(info["media_id"]) != info["version"]:
+        known = ", ".join(f"{m:08X} ({v})" for m, v in MEDIA_IDS.items())
+        sys.exit(f"default.xex is Media ID {info['media_id']:08X} version {info['version']}; this port needs a retail "
+                 f"executable whose code is the PC port's: Media ID {known}")
     digest = sha256_file(xex)
     if KNOWN_XEX and digest not in KNOWN_XEX:
         print(f"  warning: default.xex {digest} is not one of the tested dumps; trying anyway")
@@ -271,7 +420,7 @@ def copy_folder(src: Path, dest: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--disc", type=Path, help="the disc image (ISO)")
+    src.add_argument("--disc", type=Path, help="the disc image (ISO, or a .7z holding it: read without unpacking)")
     src.add_argument("--folder", type=Path, help="an already extracted disc (default.xex and GearGame/)")
     src.add_argument("--check", type=Path, help="only check a game folder (tools/codegen.sh uses it)")
     ap.add_argument("--tu", type=Path, help="Title Update 6 package for the disc's Media ID (staged in tu6/, unused yet)")
@@ -286,7 +435,10 @@ def main() -> None:
     if a.disc:
         if not a.disc.is_file():
             sys.exit(f"--disc: {a.disc} not found")
-        extract(a.disc, game)
+        if a.disc.suffix.lower() == ".7z":
+            extract_7z(a.disc, game)
+        else:
+            extract(a.disc, game)
     else:
         check_game(a.folder)
         copy_folder(a.folder, game)

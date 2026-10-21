@@ -102,6 +102,23 @@ int main(int argc, char** argv) try {
     ShaderRecompiler recompilador;
     recompilador.saltosLineales = saltos_lineales;
     try {
+      // No constant table (ShaderRecompiler::sinTabla): a first pass finds the samplers the shader fetches (unknown
+      // ones are named s<fetch constant>) and their dimensions; the second declares them. A vertex shader's sampler N
+      // is fetch constant 16 + N.
+      uint32_t tabla_be = 0;
+      std::memcpy(&tabla_be, datos.data() + 16, 4);
+      if (tabla_be == 0) {
+        ShaderRecompiler prepaso;
+        prepaso.saltosLineales = saltos_lineales;
+        prepaso.recompile(datos.data(), include);
+        const bool vertices = (__builtin_bswap32(flags_be) & 1) != 0;
+        for (const auto& [nombre, dimensiones] : prepaso.dimensionesBuscadas) {
+          unsigned indice = 0;
+          if (std::sscanf(nombre.c_str(), "s%u", &indice) != 1) continue;
+          const uint32_t registro = vertices && indice >= 16 ? indice - 16 : indice;
+          recompilador.samplersSinTabla[registro] |= dimensiones;
+        }
+      }
       recompilador.recompile(datos.data(), include);
     } catch (const std::exception& error) {
       std::printf("  %s: traduccion rechazada: %s\n", e.path().filename().string().c_str(), error.what());
