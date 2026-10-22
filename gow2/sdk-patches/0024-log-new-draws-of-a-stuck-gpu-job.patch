@@ -1,0 +1,121 @@
+diff -ru a/include/rex/ui/deko3d/nucleo.h b/include/rex/ui/deko3d/nucleo.h
+--- a/include/rex/ui/deko3d/nucleo.h	2026-10-22 13:14:28
++++ b/include/rex/ui/deko3d/nucleo.h	2026-10-22 13:14:47
+@@ -26,6 +26,7 @@
+ #include <deko3d.h>
+ 
+ #include <cstdint>
++#include <functional>
+ #include <mutex>
+ #include <span>
+ #include <vector>
+@@ -167,6 +168,9 @@
+   // Starts recording work number `trabajo` in slot trabajo % ranuras: waits for that slot's previous fence, frees
+   // the image memory released while it was recorded, rewinds its upload ring and its command memory.
+   void EmpezarTrabajo(uint64_t trabajo);
++  // Called once per stuck job, on the recording thread, when the GPU has not finished a slot after 2 s: with the
++  // number of the job it is stuck on (the renderer logs what that job brought for the first time).
++  std::function<void(uint64_t trabajo)> al_atascarse;
+   // Signals the slot's fence after everything recorded, submits it and flushes the queue.
+   void TerminarTrabajo();
+   bool TrabajoAbierto() const { return abierto_; }
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 13:14:28
++++ b/include/rex/x360/deko/render.h	2026-10-22 13:14:47
+@@ -469,6 +469,15 @@
+ 
+   // Work slots and frames
+   uint64_t trabajo_ = 0;
++  // GPU hang diagnostics (Nucleo::al_atascarse): the draws that brought a shader pair or a texture never drawn
++  // before, with their job, in a ring of kNovedades; a stuck job is most likely stuck on one of them.
++  static constexpr size_t kNovedades = 512;
++  std::set<std::pair<uint32_t, uint32_t>> novedad_pares_;
++  std::unordered_set<uint64_t> novedad_texturas_;
++  std::string novedad_dibujo_;
++  std::vector<std::pair<uint64_t, std::string>> novedades_;
++  size_t novedades_pos_ = 0;
++  void VolcarNovedades(uint64_t trabajo);
+   uint64_t fotograma_ = 1;
+   uint64_t serie_imagenes_ = 0;
+ 
+diff -ru a/src/ui/deko3d/nucleo.cpp b/src/ui/deko3d/nucleo.cpp
+--- a/src/ui/deko3d/nucleo.cpp	2026-10-22 13:14:28
++++ b/src/ui/deko3d/nucleo.cpp	2026-10-22 13:14:47
+@@ -305,6 +305,9 @@
+       disp_->ComprobarCola("esperar la valla de una ranura");
+       Registro("[dk] trabajo %llu: la GPU no ha terminado el de la ranura %u tras %d s",
+                static_cast<unsigned long long>(trabajo), ranura_, espera * 2);
++      if (espera == 1 && al_atascarse && trabajo >= config_.ranuras) {
++        al_atascarse(trabajo - config_.ranuras);
++      }
+       VaciarRegistro();
+     }
+     ns_esperando_valla_ += AhoraNs() - antes;
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 13:14:28
++++ b/src/x360/deko/destinos.cpp	2026-10-22 13:14:47
+@@ -368,6 +368,7 @@
+   config.descriptores_imagen = 8192;
+   config.descriptores_sampler = 1024;
+   nucleo_.Crear(proveedor_.dispositivo(), config);
++  nucleo_.al_atascarse = [this](uint64_t trabajo) { VolcarNovedades(trabajo); };
+   geometria_.Crear(nucleo_, uint32_t(REXCVAR_GET(nfsmw_dk_geometria_mb)), REXCVAR_GET(nfsmw_dk_geometria_muestreo));
+   descriptores_por_liberar_.resize(kRanuras);
+   lecturas_.resize(kRanuras);
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 13:14:28
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 13:14:47
+@@ -1044,6 +1044,7 @@
+   }
+   const uint64_t inicio_ns = deko::AhoraNs();
+   const uint64_t espera_inicio_ns = nucleo_.NsEsperandoValla();  // waits for the GPU are not recording time
++  novedad_dibujo_.clear();
+   // Stage times (ns_etapas_), without the waits for the GPU that may happen inside a stage.
+   uint64_t marca_etapa = inicio_ns, espera_etapa = espera_inicio_ns;
+   auto cortar_etapa = [&](uint32_t etapa) {
+@@ -1399,6 +1400,11 @@
+         uint32_t ancho = 0, alto = 0;
+         uint64_t valido_hasta = fotograma_;
+         const uint32_t ranura = PrepararTextura(fetch, sampler.tipo, ancho, alto, puntual, valido_hasta);
++        if (novedad_texturas_.insert((uint64_t(fetch[1]) << 32) | fetch[2]).second) {
++          novedad_dibujo_ += fmt::format(" tex{} {:08X} {}x{} fmt {} ({:08X} {:08X} {:08X} {:08X})", sampler.registro,
++                                         (fetch[1] >> 12) << 12, ancho, alto, fetch[1] & 0x3F, fetch[2], fetch[3],
++                                         fetch[4], fetch[5]);
++        }
+         cache.valido_hasta = valido_hasta;
+         cache.sampler = SamplerDe(fetch, puntual);
+         cache.ranura = ranura;
+@@ -2136,10 +2142,33 @@
+     }
+     ++dibujos_en_pase_;
+   }
++  if (novedad_pares_.insert({p.vs->numero, ps ? ps->numero : UINT32_MAX}).second || !novedad_dibujo_.empty()) {
++    std::string linea = fmt::format("VS n{} PS {} tipo {} cuenta {}{}", p.vs->numero,
++                                    ps ? fmt::format("n{}", ps->numero) : std::string("-"), tipo, cuenta,
++                                    novedad_dibujo_);
++    if (novedades_.size() < kNovedades) {
++      novedades_.emplace_back(trabajo_, std::move(linea));
++    } else {
++      novedades_[novedades_pos_++ % kNovedades] = {trabajo_, std::move(linea)};
++    }
++  }
+   ++dibujados_;
+   cortar_etapa(5);
+   ns_grabando_ += deko::AhoraNs() - inicio_ns - (nucleo_.NsEsperandoValla() - espera_inicio_ns);
+   return true;
++}
++
++// What the stuck job (and the one before it) drew for the first time: a new shader pair or texture.
++void RenderDk::VolcarNovedades(uint64_t trabajo) {
++  size_t n = 0;
++  for (size_t i = 0; i < novedades_.size(); ++i) {
++    const auto& [t, linea] = novedades_[(novedades_pos_ + i) % novedades_.size()];
++    if (t + 1 >= trabajo && t <= trabajo) {
++      REXLOG_WARN("[deko3d] GPU atascada en el trabajo {}: nuevo en el trabajo {}: {}", trabajo, t, linea);
++      ++n;
++    }
++  }
++  REXLOG_WARN("[deko3d] GPU atascada en el trabajo {}: {} dibujos con algo nuevo en el y el anterior", trabajo, n);
+ }
+ 
+ }  // namespace rex::x360
