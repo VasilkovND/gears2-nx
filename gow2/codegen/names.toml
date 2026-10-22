@@ -13,3 +13,12 @@ name = "gow2_D3DDevice_CreateVertexShader"
 
 [entrypoint.functions.0x82982F20]
 name = "gow2_D3DDevice_CreatePixelShader"
+
+# Memory: the game's out-of-memory handler (UE3 appOutOfMemory: called by its pooled allocator with the size it could
+# not get) and its VirtualAlloc wrapper (NtAllocateVirtualMemory; 0 on failure). src/gow2_memory_hooks.cpp logs them:
+# loading the first level, the allocator recursed through the handler until the main thread's stack ran out.
+[entrypoint.functions.0x827F7638]
+name = "gow2_appOutOfMemory"
+
+[entrypoint.functions.0x82AAA880]
+name = "gow2_VirtualAlloc"
