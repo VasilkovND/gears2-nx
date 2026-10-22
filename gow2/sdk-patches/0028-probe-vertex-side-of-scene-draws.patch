@@ -1,0 +1,30 @@
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 14:12:14
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 14:12:14
+@@ -2171,7 +2171,25 @@
+                        (fetch[0] >> 2) & 0xFF, (fetch[4] >> 2) & 0xF, (fetch[4] >> 6) & 0xF, ocupada(base),
+                        ocupada(mips));
+     }
+-    REXLOG_INFO("[deko3d] sonda escena: PS n{} VS n{} cuenta {}:{} |{}", ps->numero, p.vs->numero, cuenta, t, c);
++    // The vertex side: VS constants c0-c19 and the first 16 bytes of the three vertex fetch constants of register 31
++    // (Gears of War 2's streams: 31.0 holds the per-vertex light, 31.1 and 31.2 the mesh).
++    std::string cv, flujos;
++    for (uint32_t i = 0; i < 20; ++i) {
++      float v[4];
++      std::memcpy(v, r + kRegConstantesVs + i * 4, sizeof(v));
++      cv += fmt::format(" c{}=({:.4g},{:.4g},{:.4g},{:.4g})", i, v[0], v[1], v[2], v[3]);
++    }
++    for (uint32_t k = 0; k < 3; ++k) {
++      const uint32_t* vf = r + kRegFetch + 31 * 6 + k * 2;
++      const uint32_t direccion = vf[0] & 0x1FFFFFFC, bytes = (vf[1] & 0x3FFFFFC);
++      flujos += fmt::format(" 31.{} {:08X} {} B:", k, direccion, bytes);
++      if (direccion && bytes >= 16) {
++        const uint8_t* d = memoria_->TranslatePhysical(direccion);
++        for (uint32_t i = 0; i < 16; ++i) flujos += fmt::format(" {:02X}", d[i]);
++      }
++    }
++    REXLOG_INFO("[deko3d] sonda escena: PS n{} VS n{} cuenta {}:{} |{} | VS{} | flujos{}", ps->numero, p.vs->numero,
++                cuenta, t, c, cv, flujos);
+   }
+   if (novedad_pares_.insert({p.vs->numero, ps ? ps->numero : UINT32_MAX}).second || !novedad_dibujo_.empty()) {
+     std::string linea = fmt::format("VS n{} PS {} tipo {} cuenta {}{}", p.vs->numero,
