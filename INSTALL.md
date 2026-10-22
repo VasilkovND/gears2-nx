@@ -1,4 +1,4 @@
-# Установка gears2-nx 0.8.0 (Gears of War 2 для Nintendo Switch)
+# Установка gears2-nx 0.8.1 (Gears of War 2 для Nintendo Switch)
 
 gears2-nx — нативный порт Gears of War 2 (Xbox 360) для Switch в виде homebrew-программы. Готовых файлов не
 распространяется: код игры, шейдеры и программа собираются у вас на компьютере **из вашей собственной копии** (диск

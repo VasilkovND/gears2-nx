@@ -11,9 +11,14 @@ a homebrew NRO, and frames are drawn by a native deko3d renderer from the game's
 > You need your own copy of the game (the retail disc; no title update). This repository contains no game data or
 > game code: the code, the shaders and the NRO are all made on your computer from your copy.
 
-Status: **0.8.0** — playable with the CPU overclocked (~25 fps; 20-25 in fights); every shader of the game, read from
+Status: **0.8.1** — playable with the CPU overclocked (~25 fps; 20-25 in fights); every shader of the game, read from
 the card on demand. Slow at stock clocks: the game thread is the limit. What it took: [gow2/PORTING.md](gow2/PORTING.md).
-## Performance (0.8.0, measured on a console)
+## Performance (measured on a console)
+
+0.8.1 (2026-10-22, level 2 forest with its trees, CPU 1785 / GPU 614.4 / RAM 1600 MHz): **25.6-28.7 fps**, ~1,150-1,500
+draws per frame, GPU ~34 ms per frame (scene ~20 ms), 8-10 µs to record a draw.
+
+### 0.8.0
 
 **Playable, but heavy: the yellow zone.** The level 1 garden and level 2 (Assault) were played on 2026-10-22, with the
 console handheld and the profiler's stack sampler off.
