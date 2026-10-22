@@ -1968,14 +1968,27 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                   (w1 >> 13) & 1, (w2 & 0xFF) * 4, ((w2 >> 8) & 0x7FFFFF) * 4);
     }
     // The pixel shader's textures: fetch constant of each sampler (base, format, size, dimension, swizzle, signs).
-    for (size_t i = 0; ps_ && i < ps_->samplers.size() && i < 4; ++i) {
+    // Every sampler (blended materials use up to 8: S4-S7 were not shown), with the raw words for the mip range.
+    for (size_t i = 0; ps_ && i < ps_->samplers.size() && i < 16; ++i) {
       const uint32_t reg = ps_->samplers[i].registro;
       if (reg >= 32) continue;
       const uint32_t* f = &registers_[0x4800 + reg * 6];
-      REXLOG_INFO("[draws]       s{} tipo {}: base {:08X} fmt {} {}x{} dim {} swz {:03X} signs {:02X} tiled {} type {}",
+      REXLOG_INFO("[draws]       s{} tipo {}: base {:08X} fmt {} {}x{} dim {} swz {:03X} signs {:02X} tiled {} type {} "
+                  "words {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
                   reg, ps_->samplers[i].tipo, f[1] & 0xFFFFF000u, f[1] & 0x3F, (f[2] & 0x1FFF) + 1,
                   ((f[2] >> 13) & 0x1FFF) + 1, (f[5] >> 9) & 0x3, (f[3] >> 1) & 0xFFF, (f[0] >> 2) & 0xFF,
-                  (f[0] >> 31) & 1, f[0] & 0x3);
+                  (f[0] >> 31) & 1, f[0] & 0x3, f[0], f[1], f[2], f[3], f[4], f[5]);
+    }
+    // The pixel shader's first float constants (a material without textures shows its colour here).
+    if (ps_) {
+      std::string pc;
+      for (uint32_t c = 0; c < 6; ++c) {
+        const uint32_t r = 0x4000 + (256 + c) * 4;
+        pc += fmt::format(" c{}=({:g} {:g} {:g} {:g})", c, std::bit_cast<float>(registers_[r]),
+                          std::bit_cast<float>(registers_[r + 1]), std::bit_cast<float>(registers_[r + 2]),
+                          std::bit_cast<float>(registers_[r + 3]));
+      }
+      REXLOG_INFO("[draws]       ps constants{}", pc);
     }
   }
 
