@@ -1,0 +1,77 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 16:58:29
++++ b/include/rex/x360/deko/render.h	2026-10-22 16:58:29
+@@ -503,7 +503,7 @@
+   // 10 s), and the effects that sample the older one read an empty image (half the screen, in the decompression
+   // scene). Key: base, width, height, host format. At most kOtrasPorBase per address.
+   std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>, Resuelta> resueltas_otras_;
+-  static constexpr uint32_t kOtrasPorBase = 4;
++  static constexpr uint32_t kOtrasPorBase = 8;  // Gears of War 2 keeps 5 at one address (rebuilt every frame with 4)
+   // Read-backs: kBytesLecturaRanura per work slot in one CPU-cached, GPU-uncached block
+   std::vector<LecturasRanura> lecturas_;
+   DkMemBlock lectura_bloque_ = nullptr;
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 16:58:29
++++ b/src/x360/deko/destinos.cpp	2026-10-22 16:58:29
+@@ -4,6 +4,7 @@
+ #include <rex/x360/deko/destinos.h>
+ 
+ #include <rex/cvar.h>
++#include <rex/math.h>
+ #include <rex/filesystem.h>
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/xenos.h>
+@@ -284,6 +285,36 @@
+   color = texelFetch(origen, ivec2(gl_FragCoord.xy) + copia.desplazamiento.xy, 0) * copia.escala;
+ }
+ )";
++// A color target's EDRAM bits as the color they hold (for a clear given as raw bits).
++void ColorDeBitsEdram(uint32_t formato, uint32_t b, float c[4]) {
++  c[0] = c[1] = c[2] = c[3] = 0.0f;
++  switch (formato) {
++    case 2:
++    case 10:
++      for (uint32_t j = 0; j < 3; ++j) c[j] = float((b >> (10 * j)) & 0x3FF) / 1023.0f;
++      c[3] = float(b >> 30) / 3.0f;
++      break;
++    case 3:
++    case 12:
++      for (uint32_t j = 0; j < 3; ++j) c[j] = rex::graphics::xenos::Float7e3To32((b >> (10 * j)) & 0x3FF);
++      c[3] = float(b >> 30) / 3.0f;
++      break;
++    case 4:
++      c[0] = std::max(float(int16_t(b)) / 32767.0f, -1.0f) * 32.0f;
++      c[1] = std::max(float(int16_t(b >> 16)) / 32767.0f, -1.0f) * 32.0f;
++      break;
++    case 6:
++      c[0] = rex::xenos_half_to_float(uint16_t(b));
++      c[1] = rex::xenos_half_to_float(uint16_t(b >> 16));
++      break;
++    case 14:
++      std::memcpy(&c[0], &b, 4);
++      break;
++    default:
++      for (uint32_t j = 0; j < 4; ++j) c[j] = float((b >> (8 * j)) & 0xFF) / 255.0f;
++  }
++}
++
+ // The copy out of a k_2_10_10_10_FLOAT target. The Xbox 360 stores it as 7e3 floats (unsigned, at most 31.875) with a
+ // 2-bit alpha: a pixel shader's negative, NaN or larger output is clamped when written. The renderer keeps the target
+ // as RGBA16_Float, which holds them all, so they are clamped here, where the game reads the scene back: Gears of War 2's
+@@ -1315,8 +1346,14 @@
+   if (borrar_color) {
+     const uint64_t valor = uint64_t(reg.rb_color_clear) | (uint64_t(reg.rb_color_clear_lo) << 32);
+     borrado_previo_[destino_render->serie] = {valor, dibujados_};
+-    for (uint32_t j = 0; j < 4; ++j) {
+-      destino_render->borrado_color[j] = float((valor >> (j * 8)) & 0xFF) * (1.0f / 255.0f);
++    if ((control >> 31) & 0x1) {
++      // Bit 31 of RB_COPY_CONTROL (unused by the Xenos, set by the game's clear emulation): RB_COLOR_CLEAR holds the
++      // target's own EDRAM bits (Direct3D's color clear done through the depth path: depth24 << 8 | stencil).
++      ColorDeBitsEdram(formato_color, reg.rb_color_clear, destino_render->borrado_color);
++    } else {
++      for (uint32_t j = 0; j < 4; ++j) {
++        destino_render->borrado_color[j] = float((valor >> (j * 8)) & 0xFF) * (1.0f / 255.0f);
++      }
+     }
+     // Done when the target is next bound (EmpezarPase), resolved or painted, not now: the front buffer may still be
+     // painted from it, and a later clear makes this one unnecessary.

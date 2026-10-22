@@ -1,0 +1,42 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 16:45:40
++++ b/include/rex/x360/deko/render.h	2026-10-22 16:45:40
+@@ -282,6 +282,7 @@
+   // The dumped frame also gets the scene as the base pass left it (before the first light, k_2_10_10_10_FLOAT_AS_16_
+   // 16_16_16 into the scene's EDRAM): base FEED0000 + its EDRAM base in the dump's file name.
+   bool volcado_escena_hecho_ = false;
++  uint32_t dibujos_sin_envio_ = 0;  // draws recorded since the last submission (nfsmw_dk_envio_parcial)
+   DkMemBlock volcado_bloque_ = nullptr;
+   uint8_t* volcado_cpu_ = nullptr;
+   DkGpuAddr volcado_gpu_ = 0;
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 16:45:40
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 16:45:40
+@@ -60,6 +60,11 @@
+                     "Quitar el desenfoque radial de la composicion final. Son 7 de los 12 muestreos del "
+                     "unico cuadrilatero a pantalla completa del posproceso (1,5-2,0 ms reales). Se pierde "
+                     "el difuminado de los bordes al acelerar y con el NOS: la imagen queda mas nitida");
++REXCVAR_DEFINE_INT32(nfsmw_dk_envio_parcial, 256, "NFSMW",
++                     "deko3d: cada N dibujos lo grabado del fotograma se envia ya a la GPU (Nucleo::EnviarParcial), para "
++                     "que la GPU dibuje mientras la CPU sigue grabando. 0 = un solo envio por fotograma, como antes "
++                     "(Gears of War 2: la GPU esperaba 9-18 ms por fotograma a que se cerrara el trabajo)")
++    .range(0, 100000);
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_todas_las_salidas, false, "NFSMW",
+                     "deko3d (depuracion): los vertex shaders siempre con todos sus interpoladores, no solo los que lee "
+                     "el pixel shader");
+@@ -1051,6 +1056,15 @@
+   const uint64_t inicio_ns = deko::AhoraNs();
+   const uint64_t espera_inicio_ns = nucleo_.NsEsperandoValla();  // waits for the GPU are not recording time
+   novedad_dibujo_.clear();
++  // nfsmw_dk_envio_parcial: what the frame recorded so far goes to the GPU now, so it draws while this thread keeps
++  // recording (one submission per frame left it idle until the frame closed). Everything is bound again afterwards.
++  if (const int32_t cada = REXCVAR_GET(nfsmw_dk_envio_parcial);
++      cada > 0 && ++dibujos_sin_envio_ >= uint32_t(cada) && nucleo_.TrabajoAbierto()) {
++    dibujos_sin_envio_ = 0;
++    nucleo_.EnviarParcial();
++    OlvidarEstado();
++    g_.pase_valido = false;
++  }
+   if (volcando_ && !volcado_escena_hecho_ && ((p.registros[gr::XE_GPU_REG_RB_COLOR_INFO] >> 16) & 0xF) == 12) {
+     volcado_escena_hecho_ = true;
+     const uint32_t info = p.registros[gr::XE_GPU_REG_RB_COLOR_INFO];

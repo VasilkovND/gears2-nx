@@ -30,7 +30,7 @@ COOKED="$GAME/GearGame/CookedXenon"
 if [ "${ALL:-0}" = 1 ]; then
   INPUTS=("$GAME/GearGame")
 else
-  PACKAGES="${PACKAGES:-GlobalShaderCache-*.bin Core.xxx Engine.xxx GameFramework.xxx GearGame.xxx GearGame_P.xxx GearStart.xxx IpDrv.xxx OnlineSubsystemLive.xxx Startup_*.xxx SP_Hospital*.xxx SP_Tutorial*.xxx GUD_*.xxx}"
+  PACKAGES="${PACKAGES:-GlobalShaderCache-*.bin Core.xxx Engine.xxx GameFramework.xxx GearGame.xxx GearGame_P.xxx GearStart.xxx IpDrv.xxx OnlineSubsystemLive.xxx Startup_*.xxx SP_Hospital*.xxx SP_Tutorial*.xxx SP_Assault*.xxx GUD_*.xxx}"
   INPUTS=()
   for g in $PACKAGES; do
     for f in "$COOKED"/$g; do [ -f "$f" ] && INPUTS+=("$f"); done

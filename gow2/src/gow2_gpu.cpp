@@ -1561,6 +1561,28 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     AliasScope alias(*this);
     const uint32_t* r = msaa ? alias.Apply(msaa) : registers_.data();
     rex::x360::RegistrosCopia base = rex::x360::LeerRegistrosCopia(r);
+    // Direct3D's clear rectangle (VS 6D38CFA5): 7 dwords per vertex, POSITION float3 then COLOR float4, in fetch
+    // constant 0. A color clear done through the depth path carries the color's EDRAM bits as depth24 << 8 | stencil,
+    // so the depth it writes (z of the first vertex, through the viewport) is the color the target gets. Read before
+    // fetch constant 0 is replaced with the renderer's own rectangle below.
+    float game_z = 0.0f;
+    bool game_vertices = false;
+    if ((base.fetch_vertices[0] & 0x3) == uint32_t(xenos::FetchConstantType::kVertex) &&
+        ((base.fetch_vertices[1] >> 2) & 0xFFFFFF) >= 7) {
+      const auto endian = static_cast<xenos::Endian>(base.fetch_vertices[1] & 0x3);
+      const uint8_t* v = memory_->TranslatePhysical(base.fetch_vertices[0] & ~uint32_t(0x3));
+      float z;
+      std::memcpy(&z, v + 2 * 4, 4);
+      z = xenos::GpuSwap(z, endian);
+      float zs, zo;
+      std::memcpy(&zs, &r[g::XE_GPU_REG_PA_CL_VPORT_ZSCALE], 4);
+      std::memcpy(&zo, &r[g::XE_GPU_REG_PA_CL_VPORT_ZOFFSET], 4);
+      const uint32_t vte = r[g::XE_GPU_REG_PA_CL_VTE_CNTL];
+      if (vte & (1u << 4)) z *= zs;
+      if (vte & (1u << 5)) z += zo;
+      game_z = z;
+      game_vertices = std::isfinite(z);
+    }
     // The whole surface: the renderer takes a copy's rectangle from three vertices in fetch constant 0 (where
     // Direct3D puts a resolve's), clipped by the window scissor. Ours, in a small guest buffer made once.
     if (!clear_rect_) {
@@ -1654,12 +1676,23 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       // it (depth 0 and stencil 0 there: black). The renderer keeps depth and color in separate images, so the color
       // image is cleared too; without it the lights were added on top of the normals left there by the G-buffer.
       if (z_base == c0_base && (mask & 0xF) && !stencil_only) {
+        // The color those EDRAM bits are (Gears of War 2 clears its ambient occlusion buffer, 16_16_FLOAT, this way:
+        // with 0 the pixels it masks out, the player's character among them, were multiplied to black, and the
+        // occlusion's temporal filter trusted that black history and dragged it behind moving things).
+        uint32_t bits = 0;
+        if (game_vertices) {
+          const bool d24fs = (depth_info >> 16) & 0x1;
+          const float z = std::clamp(game_z, 0.0f, d24fs ? 1.99999988f : 1.0f);
+          const uint32_t d24 = d24fs ? xenos::Float32To20e4(z, true) : uint32_t(z * 16777215.0f + 0.5f);
+          bits = (d24 << 8) | (stencil & 0xFF);
+        }
         rex::x360::RegistrosCopia c = base;
-        c.rb_copy_control = 0u | (1u << 8) | kNullCommand;
-        c.rb_color_clear = 0;
-        c.rb_color_clear_lo = 0;
+        // Bit 31 (unused by the Xenos, like bit 30 in SDK patch 0030): RB_COLOR_CLEAR holds the target's EDRAM bits.
+        c.rb_copy_control = 0u | (1u << 8) | kNullCommand | (1u << 31);
+        c.rb_color_clear = bits;
+        c.rb_color_clear_lo = bits;
         destinos_->Copiar(c);
-        what += fmt::format(" c0={:03X} (by the depth over it)", c0_base);
+        what += fmt::format(" c0={:03X}={:08X} (by the depth over it)", c0_base, bits);
       }
     }
     ++clears_;
