@@ -32,11 +32,28 @@ shader's own, the 16 bool bits get names, and samplers come from a first pass th
 its dimension; the console takes them from the SPIR-V bindings (`SamplersDesdeSpirv`) and uploads the whole uniform
 block. Vertex shaders that declare one usage twice read one input.
 
+### First run on the console (2026-10-22, run 1)
+
+Boots in title takeover, sound plays, 30 swaps/s, ~275 draws per frame in the menu; nothing on screen but the menu's red
+selection bar. From the log:
+
+- **26 s of black screen and stalling audio at startup**: the renderer thread read the 221 MB DKSH cache byte by byte
+  (`istreambuf_iterator`) and kept three copies of it (660 MB). SDK patch 0011: one read, entries moved.
+- **Almost every draw skipped, "VS not identified"** (975,529 of 1,100,054 in 10 s): the global shader cache
+  (`GlobalShaderCache-Xbox360.bin`, 115 shaders: menus, fonts, movies, post-processing) was not in the set, and the
+  similarity step refused ties between UE3 vertex shaders that share their code. Now in the default set; ties are
+  broken by the fetch words D3D does not patch, and an exact tie takes the first. Unknown microcode is written to
+  `shaders_unknown/` (up to 2,000) for the next round.
+- `k_16_16` / `k_16_16_16_16` render targets and resolves (formats 4/5, copy 25/26) were rejected: SDK patch 0010
+  maps them to half floats.
+- 7 shaders created at run time (not in any package) were dumped by the create hooks: `gow2/out/console_dumps/`.
+
 ### Open
 
 - Two packages do not expand offline (`SP_Hospital_03`, `SP_Sinkhole_W`: an LZX error in one block; window and frame
   padding ruled out). The game itself reads them with its own XMemDecompress, so this only means their shaders are
   dumped on the console by the create hooks instead (`shaders_dump/`).
+- One vertex shader reads POSITION2/3, which have no attribute location (`USAGE_LOCATIONS`): left out.
 - 28 vertex shaders index more than 16 manual vertex fetch descriptors (uam: "array index must be < 16").
 - The full set (all maps) would be ~470 MB of library: later, per-chapter sets or loading on demand.
 

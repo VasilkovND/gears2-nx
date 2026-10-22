@@ -1,0 +1,64 @@
+diff -ru a/include/rex/ui/deko3d/cache_dksh.h b/include/rex/ui/deko3d/cache_dksh.h
+--- a/include/rex/ui/deko3d/cache_dksh.h	2026-10-22 10:05:00
++++ b/include/rex/ui/deko3d/cache_dksh.h	2026-10-22 10:05:00
+@@ -53,6 +53,8 @@
+   void Anadir(const Clave& clave, std::vector<uint8_t> dksh);
+   size_t size() const { return entradas_.size(); }
+   const std::map<Clave, std::vector<uint8_t>>& entradas() const { return entradas_; }
++  // Takes the entries out (the cache is left empty): merging a large cache into another without copying it.
++  std::map<Clave, std::vector<uint8_t>> Extraer() { return std::move(entradas_); }
+ 
+  private:
+   std::map<Clave, std::vector<uint8_t>> entradas_;
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 10:05:00
++++ b/src/x360/deko/destinos.cpp	2026-10-22 10:05:00
+@@ -395,28 +395,42 @@
+   std::string motivo;
+   for (const std::filesystem::path& ruta :
+        {RutaCache(), rex::filesystem::GetExecutableFolder() / "shadercache_dksh.bin"}) {
+-    std::ifstream f(ruta, std::ios::binary);
++    std::ifstream f(ruta, std::ios::binary | std::ios::ate);
+     if (!f) {
+       continue;
+     }
+-    std::vector<uint8_t> datos((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
++    // One read of the whole file, and the entries moved, not copied: Gears of War 2's 221 MB cache read byte by byte
++    // (istreambuf_iterator) took 26 s of the renderer thread at startup (black screen, audio stalls), and three copies
++    // of it (file, parsed, merged) were 660 MB.
++    const uint64_t inicio_ns = deko::AhoraNs();
++    const std::streamsize tam = f.tellg();
++    std::vector<uint8_t> datos(tam > 0 ? size_t(tam) : 0);
++    f.seekg(0);
++    if (!datos.empty() && !f.read(reinterpret_cast<char*>(datos.data()), tam)) {
++      REXLOG_WARN("[deko3d] cache de DKSH {}: lectura incompleta", ruta.string());
++      continue;
++    }
+     deko::CacheDksh leida;
+-    if (!leida.Cargar(datos, motivo)) {
++    const bool cargada = leida.Cargar(datos, motivo);
++    std::vector<uint8_t>().swap(datos);
++    if (!cargada) {
+       REXLOG_WARN("[deko3d] cache de DKSH {} no se usa: {}", ruta.string(), motivo);
+       continue;
+     }
+     size_t nuevas = 0;
++    const size_t total = leida.size();
+     const bool de_la_consola = ruta == RutaCache();
+-    for (const auto& [clave, dksh] : leida.entradas()) {
++    for (auto& [clave, dksh] : leida.Extraer()) {
+       if (de_la_consola) {
+         cache_consola_.Anadir(clave, dksh);
+       }
+       if (!cache_.Buscar(clave)) {
+-        cache_.Anadir(clave, dksh);
++        cache_.Anadir(clave, std::move(dksh));
+         ++nuevas;
+       }
+     }
+-    REXLOG_INFO("[deko3d] cache de DKSH: {} entradas de {} ({} nuevas)", leida.size(), ruta.string(), nuevas);
++    REXLOG_INFO("[deko3d] cache de DKSH: {} entradas de {} ({} nuevas) en {:.1f} s", total, ruta.string(), nuevas,
++                double(deko::AhoraNs() - inicio_ns) / 1e9);
+   }
+   if (!cache_.size()) {
+     REXLOG_WARN("[deko3d] sin cache de DKSH: cada shader se compila en la consola la primera vez que se usa");

@@ -16,8 +16,13 @@
 #include <mutex>
 #include <unordered_map>
 
+#include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/memory/utils.h>
+
+#include <cstdio>
+#include <filesystem>
 #include <rex/system/xmemory.h>
 
 // xxHash reads with memcpy under GCC's strict aliasing (see shaders/ds_shader_library.cpp).
@@ -25,6 +30,9 @@
 #define XXH_FORCE_MEMORY_ACCESS 0
 #define XXH_INLINE_ALL
 #include <xxhash.h>
+
+REXCVAR_DEFINE_BOOL(gow2_volcar_desconocidos, true, "Gears2",
+                    "Escribir el microcodigo de cada shader que no se identifica en shaders_unknown/ (hasta 2000)");
 
 namespace gow2::shaders {
 namespace {
@@ -207,6 +215,27 @@ void TiposDesdeSpirv(std::span<const uint32_t> spirv, std::vector<SamplerShader>
       if (d->second == 3) sampler.tipo = 14;       // Dim Cube: SamplerCube
       else if (d->second == 2) sampler.tipo = 13;  // Dim 3D: Sampler3D
     }
+  }
+}
+
+// Each distinct microcode no step identifies, as the ring loaded it (big-endian words, D3D's patches included), to
+// shaders_unknown/{vs,ps}_<fingerprint>.bin beside the NRO: compared offline with the game's containers, it tells why
+// it was not found (not in the library, or patched in a way the steps do not expect). gow2_volcar_desconocidos.
+void VolcarDesconocido(bool vertices, uint64_t huella, std::span<const uint32_t> microcodigo) {
+  static uint32_t escritos = 0;
+  if (!REXCVAR_GET(gow2_volcar_desconocidos) || escritos >= 2000) return;
+  static const std::filesystem::path carpeta = rex::filesystem::GetExecutableFolder() / "shaders_unknown";
+  std::error_code ec;
+  if (escritos == 0) std::filesystem::create_directories(carpeta, ec);
+  char nombre[48];
+  std::snprintf(nombre, sizeof(nombre), "%s_%016llx.bin", vertices ? "vs" : "ps", static_cast<unsigned long long>(huella));
+  if (FILE* f = std::fopen((carpeta / nombre).string().c_str(), "wb")) {
+    for (uint32_t w : microcodigo) {
+      const uint32_t be = __builtin_bswap32(w);
+      std::fwrite(&be, 4, 1, f);
+    }
+    std::fclose(f);
+    ++escritos;
   }
 }
 
@@ -437,7 +466,11 @@ const EntradaShader* Biblioteca::Identificar(bool vertices, uint32_t fisica,
     // compared word by word; the closest one is taken if it is clearly the closest and differs in few words.
     if (!elegido && vertices) {
       if (auto c = d.candidatos.find({vertices, uint32_t(microcodigo.size())}); c != d.candidatos.end()) {
-        size_t mejor = SIZE_MAX, segundo = SIZE_MAX;
+        // Score: words that differ outside the fetch instructions, then (Unreal Engine 3 has many vertex shaders
+        // with the same code and other vertex layouts) the fetch words that differ in the bits D3D does not patch.
+        // A tie on both with no other word different is the same code: the first one is taken.
+        using Puntos = std::pair<size_t, size_t>;
+        Puntos mejor{SIZE_MAX, SIZE_MAX}, segundo{SIZE_MAX, SIZE_MAX};
         const EntradaShader* candidato = nullptr;
         for (uint32_t indice : c->second) {
           const EntradaShader& e = d.entradas[indice];
@@ -445,26 +478,29 @@ const EntradaShader* Biblioteca::Identificar(bool vertices, uint32_t fisica,
           for (const ElementoVertice& el : e.elementos) {
             for (size_t j = 0; j < 3; ++j) fetch[size_t(el.instruccion) * 3 + j] = true;
           }
-          size_t distintas = 0;
-          for (size_t w = 0; w < microcodigo.size() && distintas <= mejor; ++w) {
-            if (fetch[w]) continue;
-            uint32_t a = microcodigo[w], b = e.microcodigo[w];
-            distintas += a != b;
+          Puntos p{0, 0};
+          for (size_t w = 0; w < microcodigo.size() && p.first <= mejor.first; ++w) {
+            if (fetch[w]) {
+              p.second += (microcodigo[w] & kFetchConserva[w % 3]) != e.microcodigo[w];
+              continue;
+            }
+            p.first += microcodigo[w] != e.microcodigo[w];
           }
-          if (distintas < mejor) {
+          if (p < mejor) {
             segundo = mejor;
-            mejor = distintas;
+            mejor = p;
             candidato = &e;
-          } else if (distintas < segundo) {
-            segundo = distintas;
+          } else if (p < segundo) {
+            segundo = p;
           }
         }
-        if (candidato && mejor <= std::max<size_t>(3, microcodigo.size() / 8) && mejor < segundo) {
+        if (candidato && mejor.first <= std::max<size_t>(3, microcodigo.size() / 8) &&
+            (mejor < segundo || (mejor.first == 0 && mejor.second == 0))) {
           elegido = candidato;
           parecido = true;
           if (d.avisos_parecido++ < kMaxAvisos) {
-            REXLOG_WARN("[shaders] VS at {:08X} taken as n{} by similarity: {} words differ (next best {})", fisica,
-                        candidato->numero, mejor, segundo);
+            REXLOG_WARN("[shaders] VS at {:08X} taken as n{} by similarity: {}+{} words differ (next best {}+{})",
+                        fisica, candidato->numero, mejor.first, mejor.second, segundo.first, segundo.second);
           }
           d.aprendidas[huella] = elegido;  // later loads of it: step 2
         }
@@ -475,6 +511,7 @@ const EntradaShader* Biblioteca::Identificar(bool vertices, uint32_t fisica,
       REXLOG_WARN("[shaders] unknown {} load: {} words at {:08X}", vertices ? "VS" : "PS", microcodigo.size(),
                   fisica);
     }
+    if (!elegido) VolcarDesconocido(vertices, huella, microcodigo);
   }
   ++(parecido ? d.estadisticas.por_parecido
               : elegido ? d.estadisticas.por_microcodigo : d.estadisticas.desconocidas);

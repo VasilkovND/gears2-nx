@@ -3,11 +3,11 @@
 # (shaders/gow2_extract_shaders.cpp: Unreal Engine 3 keeps them in the shader caches inside GearGame/CookedXenon),
 # translated ahead of time (shaders/build_library.sh) and compiled for the console's GPU, so the game never compiles a
 # shader while it runs. Containers the console dumped (shaders_dump/ beside the NRO: the ones the packages did not have)
-# are added with EXTRA=<that folder>. Nothing here is committed.
+# go in gow2/out/console_dumps/ (or EXTRA=<folder>) and are added. Nothing here is committed.
 #
 # The game has 35,886 different shaders (every material of every map has its own); all of them would be a ~470 MB
-# library. By default the set is the startup packages (engine, game, menus) and Act 1's hospital maps (SP_Hospital*):
-# 10,371. ALL=1 takes every package, PACKAGES="<glob> ..." (file names in GearGame/CookedXenon) chooses them.
+# library. By default the set is the global shader cache (GlobalShaderCache-Xbox360.bin: menus, post-processing, movies),
+# the startup packages (engine, game, menus) and Act 1's hospital maps (SP_Hospital*): 10,486. ALL=1 takes every package, PACKAGES="<glob> ..." (file names in GearGame/CookedXenon) chooses them.
 #
 #   gow2/tools/shaders.sh <game folder>   -> gow2/out/shaders/gow2_shaders.dslib and shadercache_dksh.bin (beside the NRO)
 #
@@ -29,7 +29,7 @@ COOKED="$GAME/GearGame/CookedXenon"
 if [ "${ALL:-0}" = 1 ]; then
   INPUTS=("$GAME/GearGame")
 else
-  PACKAGES="${PACKAGES:-Core.xxx Engine.xxx GameFramework.xxx GearGame.xxx GearGame_P.xxx GearStart.xxx IpDrv.xxx OnlineSubsystemLive.xxx Startup_*.xxx SP_Hospital*.xxx}"
+  PACKAGES="${PACKAGES:-GlobalShaderCache-*.bin Core.xxx Engine.xxx GameFramework.xxx GearGame.xxx GearGame_P.xxx GearStart.xxx IpDrv.xxx OnlineSubsystemLive.xxx Startup_*.xxx SP_Hospital*.xxx}"
   INPUTS=()
   for g in $PACKAGES; do
     for f in "$COOKED"/$g; do [ -f "$f" ] && INPUTS+=("$f"); done
@@ -37,11 +37,11 @@ else
 fi
 rm -rf "$OUT/shaders_extracted"
 "$OUT/bin/gow2_extract_shaders" "$OUT/shaders_extracted" "${INPUTS[@]}" | tail -3 || true
-if [ -n "${EXTRA:-}" ]; then
-  for f in "$EXTRA"/*.bin; do
+for d in "$OUT/console_dumps" ${EXTRA:+"$EXTRA"}; do
+  for f in "$d"/*.bin; do
     [ -f "$f" ] && cp -n "$f" "$OUT/shaders_extracted/" || true
   done
-fi
+done
 echo "shaders: $(ls "$OUT/shaders_extracted" | grep -c '^vs_') VS, $(ls "$OUT/shaders_extracted" | grep -c '^ps_') PS"
 # The variants the console compiled in the background in earlier sessions (tools/dksh_variants.py) go in the cache too.
 DKSH=1 VARIANTES="$ROOT/gow2/dksh_variants.txt" "$ROOT/shaders/build_library.sh" "$OUT/shaders_extracted" "$OUT/shaders"
