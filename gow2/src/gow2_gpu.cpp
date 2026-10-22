@@ -1306,7 +1306,35 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         text += ")";
       }
     }
-    REXLOG_INFO("{}", text);
+    // The first vertices the index buffer names: position (stream 31.2, float3) and the index/weights (31.1 +32), with
+    // c0-c9 and c23-c26, to redo the shader's math on the PC.
+    {
+      const uint32_t init = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+      const uint32_t dma = Register(g::XE_GPU_REG_VGT_DMA_BASE);
+      const bool idx32 = (init >> 11) & 1;
+      const uint32_t pos_base = Register(v + 4) & ~0x3u, w_base = Register(v + 2) & ~0x3u;
+      const uint8_t* ib = dma ? memory_->TranslatePhysical(dma & ~0x3u) : nullptr;
+      const uint8_t* pb = pos_base ? memory_->TranslatePhysical(pos_base) : nullptr;
+      const uint8_t* wb = w_base ? memory_->TranslatePhysical(w_base) : nullptr;
+      auto f32 = [](const uint8_t* m) { return std::bit_cast<float>(rex::memory::load_and_swap<uint32_t>(m)); };
+      std::string verts;
+      for (uint32_t k = 0; ib && pb && wb && k < 6; ++k) {
+        const uint32_t i = idx32 ? rex::memory::load_and_swap<uint32_t>(ib + k * 4)
+                                 : rex::memory::load_and_swap<uint16_t>(ib + k * 2);
+        verts += fmt::format(" [i{} p({:g} {:g} {:g}) w({:g} {:g} {:g} {:g})]", i, f32(pb + i * 12), f32(pb + i * 12 + 4),
+                             f32(pb + i * 12 + 8), f32(wb + i * 64 + 32), f32(wb + i * 64 + 36), f32(wb + i * 64 + 40),
+                             f32(wb + i * 64 + 44));
+      }
+      std::string cs;
+      for (uint32_t c : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 27u, 28u, 29u, 30u}) {
+        const uint32_t r = 0x4000 + c * 4;
+        cs += fmt::format(" c{}=({:g} {:g} {:g} {:g})", c, std::bit_cast<float>(Register(r)),
+                          std::bit_cast<float>(Register(r + 1)), std::bit_cast<float>(Register(r + 2)),
+                          std::bit_cast<float>(Register(r + 3)));
+      }
+      REXLOG_INFO("[gpu] skin VS n{} vertices (index base {:08X}, {}-bit):{};{}", vs_->numero, dma, idx32 ? 32 : 16,
+                  verts, cs);
+    }
   }
 
   // The lamp glow (gVFGlowInfo) and corona (modulate_by_corona_info_vs) vertex shaders: both read the lamp's
