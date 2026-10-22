@@ -1,0 +1,105 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 16:21:05
++++ b/include/rex/x360/deko/render.h	2026-10-22 16:21:05
+@@ -224,7 +224,8 @@
+   // sampling; copia3d_pendiente_: a copy since then, which the next draw or clear waits for.
+   // modos_signo (4 ints, per destination channel): 0 copy, 1 signed 8-bit, 2 biased (2x - 1); nullptr: plain copy.
+   bool Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto, ImagenDk& destino,
+-                uint32_t dx, uint32_t dy, const int32_t* modos_signo = nullptr, bool limitar_7e3 = false);
++                uint32_t dx, uint32_t dy, const int32_t* modos_signo = nullptr, bool limitar_7e3 = false,
++                float escala = 1.0f);  // 2^copy_dest_exp_bias (RB_COPY_DEST_INFO bits 16-21)
+   bool rop_sin_barrera_ = true;
+   bool copia3d_pendiente_ = false;
+   uint64_t copias_3d_ = 0, barreras_fragmentos_ = 0;
+@@ -232,6 +233,7 @@
+   bool fs_copia_color_valido_ = false, fs_copia_profundidad_valido_ = false, fs_copia_signo_valido_ = false;
+   // The copy out of a k_2_10_10_10_FLOAT target (7e3): what that format can hold (Copiar3D's limitar_7e3).
+   DkShader fs_copia_7e3_{};
++  std::set<int32_t> sesgos_vistos_copia_;  // exponent biases of color resolves already logged
+   bool fs_copia_7e3_valido_ = false;
+   // A resolved texture sampled with signed or biased components (TextureSign 1 or 2): the GPU applies them while
+   // fetching, the host image holds the unsigned values, so a converted copy is sampled instead (texturas.cpp).
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 16:21:05
++++ b/src/x360/deko/destinos.cpp	2026-10-22 16:21:05
+@@ -276,10 +276,12 @@
+ layout(binding = 0) uniform sampler2D origen;
+ layout(std140, binding = 0) uniform Copia {
+   ivec4 desplazamiento;
++  ivec4 modos;   // kFsCopiaSigno's; unused here
++  vec4 escala;   // 2^copy_dest_exp_bias
+ } copia;
+ layout(location = 0) out vec4 color;
+ void main() {
+-  color = texelFetch(origen, ivec2(gl_FragCoord.xy) + copia.desplazamiento.xy, 0);
++  color = texelFetch(origen, ivec2(gl_FragCoord.xy) + copia.desplazamiento.xy, 0) * copia.escala;
+ }
+ )";
+ // The copy out of a k_2_10_10_10_FLOAT target. The Xbox 360 stores it as 7e3 floats (unsigned, at most 31.875) with a
+@@ -290,12 +292,15 @@
+ layout(binding = 0) uniform sampler2D origen;
+ layout(std140, binding = 0) uniform Copia {
+   ivec4 desplazamiento;
++  ivec4 modos;
++  vec4 escala;
+ } copia;
+ layout(location = 0) out vec4 color;
+ void main() {
+   vec4 t = texelFetch(origen, ivec2(gl_FragCoord.xy) + copia.desplazamiento.xy, 0);
+   vec4 tope = vec4(31.875, 31.875, 31.875, 1.0);
+-  color = vec4(greaterThan(t, vec4(0.0))) * min(t, tope);  // NaN compares false: 0
++  // Clamped in EDRAM units, then the resolve's exponent bias (Gears of War 2: scene x 8 in EDRAM, resolved with -3).
++  color = vec4(greaterThan(t, vec4(0.0))) * min(t, tope) * copia.escala;  // NaN compares false: 0
+ }
+ )";
+ // The same copy with each channel's TextureSign applied: 1 reads the 8-bit value as signed, 2 as biased (2x - 1).
+@@ -636,7 +641,8 @@
+ }
+ 
+ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto,
+-                        ImagenDk& destino, uint32_t dx, uint32_t dy, const int32_t* modos_signo, bool limitar_7e3) {
++                        ImagenDk& destino, uint32_t dx, uint32_t dy, const int32_t* modos_signo, bool limitar_7e3,
++                        float escala) {
+   const bool z = destino.profundidad;
+   limitar_7e3 = limitar_7e3 && !z && !modos_signo && fs_copia_7e3_valido_;
+   if (!vs_salida_valido_ || !(z ? fs_copia_profundidad_valido_ : fs_copia_color_valido_) ||
+@@ -654,6 +660,8 @@
+   if (modos_signo) {
+     std::memcpy(ubo.cpu + sizeof(desplazamiento), modos_signo, 4 * sizeof(int32_t));
+   }
++  const float escalas[4] = {escala, escala, escala, escala};
++  std::memcpy(ubo.cpu + 32, escalas, sizeof(escalas));
+   const uint32_t ranura = VistaDe(origen, 0x688, z ? 0 /* RRRR */ : 0x688);
+   DkCmdBuf cmd = nucleo_.comandos();
+   MarcarGpu(kGpuCopias);
+@@ -1214,8 +1222,17 @@
+       // nfsmw_nativo_frontal_perezoso: the whole scene to the front buffer of the last Swap, not read back.
+       const int32_t maximo_lectura = REXCVAR_GET(nfsmw_nativo_leer_resueltas_texels);
+       const bool se_lee = maximo_lectura > 0 && uint64_t(ancho) * alto <= uint64_t(maximo_lectura);
++      // copy_dest_exp_bias (signed 6 bits at 16 of RB_COPY_DEST_INFO): the resolve scales by 2^bias. Gears of War 2
++      // writes its scene x8 into the 7e3 EDRAM (c0 = 8 in every scene pixel shader) and resolves it with -3; ignored,
++      // the post-processing got the scene 8 times too bright and burned it white. Only the 3D engine copy scales.
++      const int32_t sesgo_exp = int32_t(reg.rb_copy_dest_info << 10) >> 26;
++      const float escala_exp = std::ldexp(1.0f, sesgo_exp);
++      if (sesgo_exp && sesgos_vistos_copia_.insert(sesgo_exp).second) {
++        REXLOG_INFO("[deko3d] resolve con exp bias {} (x{}) desde EDRAM formato {}", sesgo_exp, escala_exp, formato_color);
++      }
+       const bool frontal_perezoso = REXCVAR_GET(nfsmw_nativo_frontal_perezoso);  // read each time: the game can switch it (ds2 safe mode)
+-      const bool frontal = frontal_perezoso && !frontal_apagado_ && base_resuelta == ultimo_frontal_ && !encoger &&
++      const bool frontal = frontal_perezoso && !frontal_apagado_ && sesgo_exp == 0 && base_resuelta == ultimo_frontal_ &&
++                           !encoger &&
+                            !se_lee && x0 == 0 && y0 == 0 && dx == 0 && dy == 0 && ancho == resuelta->imagen.ancho &&
+                            alto == resuelta->imagen.alto;
+       // What the resolve reads must be there: the useful area grows to it, a pending clear is done, the band too.
+@@ -1240,9 +1257,9 @@
+         const DkImageView destino_vista = VistaCompleta(resuelta->imagen.imagen);
+         // On the 3D engine, except the shrink (a linear blit) and the small resolves the game reads back (their
+         // read-back is a copy engine transfer: both go there, one after the other, with no barrier between).
+-        if (encoger || se_lee ||
++        if (encoger || (se_lee && sesgo_exp == 0) ||
+             !Copiar3D(*destino_render, uint32_t(x0), uint32_t(y0), ancho, alto, resuelta->imagen, dx, dy, nullptr,
+-                      formato_color == 3 || formato_color == 12)) {
++                      formato_color == 3 || formato_color == 12, escala_exp)) {
+           MarcarGpu(kGpuCopias);
+           AntesDeTransferir();
+           if (encoger) {
