@@ -285,3 +285,49 @@ REX_HOOK_RAW(sub_8295B610) {
 #endif
   __imp__sub_8295B610(ctx, base);
 }
+
+// --- The game thread's hottest small functions (rex_perfil.log, level 2, overclocked: the game thread is the limit) ---
+//
+// sub_82A92B70  the C runtime's memcpy (r3 destination, r4 source, r5 bytes; answers r3): byte, word and dcbt loops in
+//               PowerPC, 3 % of the game thread. Native memmove (guest memory is one flat block here).
+// sub_823ACD10  Unreal's TMap find by a two-word key (an FName): hash = first word & (HashSize - 1) into the hash
+//               array (map+52, or the inline one at map+48 when null), then the chain of 20-byte elements from map+0
+//               (key at +0/+4, next index at +12) until -1; the index (or -1) is stored at r3. 4 % of the game thread.
+REXCVAR_DEFINE_BOOL(gow2_cpu_nativo, true, "Gears2",
+                    "memcpy (sub_82A92B70) y la busqueda en TMap (sub_823ACD10) del juego en codigo nativo");
+
+REX_EXTERN(__imp__sub_82A92B70);
+REX_HOOK_RAW(sub_82A92B70) {
+  if (!REXCVAR_GET(gow2_cpu_nativo)) {
+    __imp__sub_82A92B70(ctx, base);
+    return;
+  }
+  if (const uint32_t n = ctx.r5.u32) std::memmove(base + ctx.r3.u32, base + ctx.r4.u32, n);
+}
+
+REX_EXTERN(__imp__sub_823ACD10);
+REX_HOOK_RAW(sub_823ACD10) {
+  if (!REXCVAR_GET(gow2_cpu_nativo)) {
+    __imp__sub_823ACD10(ctx, base);
+    return;
+  }
+  auto u32 = [&](uint32_t a) { return rex::memory::load_and_swap<uint32_t>(base + a); };
+  const uint32_t map = ctx.r4.u32, key = ctx.r5.u32;
+  uint32_t found = 0xFFFFFFFFu;
+  if (const uint32_t hash_size = u32(map + 56)) {
+    const uint32_t k0 = u32(key), k1 = u32(key + 4);
+    uint32_t hash = u32(map + 52);
+    if (!hash) hash = map + 48;
+    const uint32_t elements = u32(map);
+    uint32_t index = u32(hash + ((k0 & (hash_size - 1)) << 2));
+    for (uint32_t steps = 0; index != 0xFFFFFFFFu && steps < (1u << 22); ++steps) {
+      const uint32_t e = elements + index * 20;
+      if (u32(e) == k0 && u32(e + 4) == k1) {
+        found = index;
+        break;
+      }
+      index = u32(e + 12);
+    }
+  }
+  rex::memory::store_and_swap<uint32_t>(base + ctx.r3.u32, found);
+}
