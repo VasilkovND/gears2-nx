@@ -703,6 +703,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 
   void PacketType3(Reader& data, uint32_t packet, uint32_t count, int depth) {
     const uint32_t opcode = (packet >> 8) & 0x7F;
+    // The traced frame (ZL + ZR + Left, automatic dumps): every type 3 packet but the register writes, with its
+    // predicate and the bins, to see where a frame's commands go (Gears of War 2's scene never reached a draw).
+    if (draw_tracing_ && packet_trace_n_ < 6000 && opcode != xenos::PM4_SET_CONSTANT &&
+        opcode != xenos::PM4_SET_SHADER_CONSTANTS) {
+      ++packet_trace_n_;
+      const uint32_t w0 = count > 0 ? data.Peek() : 0;
+      REXLOG_INFO("[pm4] d{} op {:02X} n {} pred {} sel {:X} mask {:X} w0 {:08X}{}", depth, opcode, count,
+                  packet & 0x1, bin_select_, bin_mask_, w0,
+                  (packet & 0x1) && !(bin_select_ & bin_mask_) ? " SKIPPED" : "");
+    }
     if ((packet & 0x1) && (!(bin_select_ & bin_mask_) || opcode == xenos::PM4_XE_SWAP)) {
 #if GOW2_DEKO3D
       ++frame_.predicated_skipped;
@@ -758,6 +768,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
             draw_tracing_ = true;
             draw_trace_n_ = 0;
             draw_trace_cap_ = 3000;
+            packet_trace_n_ = 0;
             REXLOG_INFO("[draws] full trace of the next frame (ZL + ZR + Left)");
           }
           AutomaticCollection();
@@ -1624,6 +1635,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         draw_tracing_ = true;
         draw_trace_n_ = 0;
         draw_trace_cap_ = 3000;
+        packet_trace_n_ = 0;
       }
     }
   }
@@ -1978,6 +1990,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t rect_buffer_ = 0;         // guest buffer with the rectangle lists made quads (ExpandRectList)
   uint32_t rect_buffer_size_ = 0;
   uint64_t last_frame_draws_ = 0;   // geometry draws of the last finished frame
+  uint32_t packet_trace_n_ = 0;     // [pm4] lines of the traced frame
   uint64_t rect_lists_ = 0;
   uint32_t rect_unexpanded_logged_ = 0;
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection
