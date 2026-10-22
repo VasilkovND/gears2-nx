@@ -152,9 +152,9 @@ REXCVAR_DEFINE_STRING(gow2_sonda, "700,650", "Gears2",
                       "Sonda del fotograma tras la traza (ZL+ZR+Left): x,y de un cuadrado de 8x8 pixeles; cada dibujo "
                       "del pase base se dibuja solo ahi y la GPU cuenta sus pixeles: el ultimo que pinta es el que se ve "
                       "en ese punto (vacio = sin sonda)");
-REXCVAR_DEFINE_BOOL(gow2_saltar_logos, true, "Gears2",
-                    "Sin los videos de los logotipos del arranque (Epic y Microsoft Game Studios): el juego va directo a "
-                    "la pantalla de titulo");
+REXCVAR_DEFINE_BOOL(gow2_saltar_logos, false, "Gears2",
+                    "Sin los videos de los logotipos del arranque (Epic y Microsoft Game Studios). Apagado: sin el "
+                    "archivo el juego lee un puntero nulo y no arranca (pantalla negra)");
 REXCVAR_DEFINE_BOOL(gow2_busqueda_ps, true, "Gears2",
                     "Modos de busqueda (ZL+ZR+Right): cada pulsacion deja sin dibujar un pixel shader del pase base "
                     "(false: un vertex shader de los que escriben la profundidad de la escena)");
