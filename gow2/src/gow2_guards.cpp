@@ -1,38 +1,98 @@
 // gears2-nx - guards against loops in the game's data (diagnostics, then a way through).
 //
-// sub_8255E4A8 walks an object's attached objects (the array at +236, its count at +240; UE3's Actor::Attached by its
-// shape) and calls the same virtual function (vtable +428) on each, which for actors is this function again. Loading
-// the first level on the Switch, the walk never ended: the attachments form a cycle, and the main thread's stack ran
-// out (a fault just below it, in whatever the deepest frame allocated). The guard stops the walk at a depth no real
-// attachment chain reaches and logs the objects of the cycle once.
+// Loading the first level on the Switch, one object (an actor, by the fields used) pointed at itself: it was in its
+// own attachment array (+236 data, +240 count; UE3's Actor::Attached by its shape) and its field +64 was itself too.
+// Two functions walk those links recursively and never ended, and the main thread's stack ran out:
+//   sub_8255E4A8  for each attached object, the same function through vtable +428;
+//   sub_8255A5C0  through the object at +64 (vtable +52), unless object flag bit 61 is set.
+// The guards cut each walk at a depth no real chain reaches, take the object out of its own attachment array, and
+// log the object's name and class once (UE3 names: GNames at 0x83136834, Name at +44, Class at +52, as
+// gears-of-war-2-pc-port reads them), so the reason it points at itself can be found.
 
 #include "gow2_pch.h"
 
 #include <atomic>
+#include <string>
 
 #include <rex/logging.h>
 
 namespace {
-constexpr int kMaxAttachDepth = 48;
+constexpr uint32_t kGNames = 0x83136834;
+constexpr uint32_t kObjNameIndex = 44;
+constexpr uint32_t kObjClass = 52;
+constexpr uint32_t kNameEntryText = 8;
+constexpr int kMaxDepth = 48;
+
 thread_local int t_attach_depth = 0;
-std::atomic<uint32_t> g_attach_cuts{0};
+thread_local int t_chain_depth = 0;
+std::atomic<uint32_t> g_cuts{0};
+
+std::string NameOf(uint8_t* base, uint32_t object) {
+  if (!object || object < 0x40000000u) return "?";
+  const uint32_t index = REX_LOAD_U32(object + kObjNameIndex);
+  const uint32_t table = REX_LOAD_U32(kGNames), count = REX_LOAD_U32(kGNames + 4);
+  if (!table || index >= count) return fmt::format("name#{}", index);
+  const uint32_t entry = REX_LOAD_U32(table + index * 4);
+  if (!entry) return fmt::format("name#{}", index);
+  std::string text;
+  for (uint32_t i = 0; i < 96; ++i) {
+    const char ch = char(*(base + entry + kNameEntryText + i));
+    if (!ch) break;
+    text += ch;
+  }
+  return text;
+}
+
+void Report(uint8_t* base, const char* walk, uint32_t object, int depth) {
+  const uint32_t n = g_cuts.fetch_add(1);
+  if (n >= 8 && (n & (n - 1)) != 0) return;
+  const uint32_t cls = REX_LOAD_U32(object + kObjClass);
+  REXLOG_WARN("[guard] {} walk cut at depth {} ({} cuts): {} (class {}) at {:08X}, vtable {:08X}, +64 {:08X}, "
+              "attached {} first {:08X}",
+              walk, depth, n + 1, NameOf(base, object), NameOf(base, cls), object, REX_LOAD_U32(object),
+              REX_LOAD_U32(object + 64), REX_LOAD_U32(object + 240),
+              REX_LOAD_U32(object + 240) ? REX_LOAD_U32(REX_LOAD_U32(object + 236)) : 0);
+}
+
+// The object out of its own attachment array (moving the rest down): every walk of that array loops otherwise.
+void Untangle(uint8_t* base, uint32_t object) {
+  const uint32_t data = REX_LOAD_U32(object + 236);
+  uint32_t count = REX_LOAD_U32(object + 240);
+  if (!data || count > 4096) return;
+  for (uint32_t i = 0; i < count;) {
+    if (REX_LOAD_U32(data + i * 4) == object) {
+      for (uint32_t j = i + 1; j < count; ++j) REX_STORE_U32(data + (j - 1) * 4, REX_LOAD_U32(data + j * 4));
+      --count;
+      REX_STORE_U32(object + 240, count);
+      REXLOG_WARN("[guard] {} at {:08X} was attached to itself: taken out ({} left)", NameOf(base, object), object,
+                  count);
+    } else {
+      ++i;
+    }
+  }
+}
 }  // namespace
 
 REX_EXTERN(__imp__sub_8255E4A8);
 REX_HOOK_RAW(sub_8255E4A8) {
-  if (t_attach_depth >= kMaxAttachDepth) {
-    const uint32_t self = ctx.r3.u32;
-    const uint32_t data = REX_LOAD_U32(self + 236), count = REX_LOAD_U32(self + 240);
-    const uint32_t first = count > 0 && data ? REX_LOAD_U32(data) : 0;
-    const uint32_t n = g_attach_cuts.fetch_add(1);
-    if (n < 8 || (n & (n - 1)) == 0) {
-      REXLOG_WARN("[guard] attachment walk cut at depth {} ({} cuts): object {:08X} (vtable {:08X}) has {} attached, "
-                  "first {:08X}{}",
-                  t_attach_depth, n + 1, self, REX_LOAD_U32(self), count, first, first == self ? " (itself)" : "");
-    }
+  if (t_attach_depth == 0) Untangle(base, ctx.r3.u32);
+  if (t_attach_depth >= kMaxDepth) {
+    Report(base, "attachment", ctx.r3.u32, t_attach_depth);
     return;
   }
   ++t_attach_depth;
   __imp__sub_8255E4A8(ctx, base);
   --t_attach_depth;
+}
+
+REX_EXTERN(__imp__sub_8255A5C0);
+REX_HOOK_RAW(sub_8255A5C0) {
+  if (t_chain_depth >= kMaxDepth) {
+    Report(base, "+64 chain", ctx.r3.u32, t_chain_depth);
+    ctx.r3.u64 = 0;  // what the function answers at the end of a chain
+    return;
+  }
+  ++t_chain_depth;
+  __imp__sub_8255A5C0(ctx, base);
+  --t_chain_depth;
 }
