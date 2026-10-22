@@ -494,8 +494,11 @@ const EntradaShader* Biblioteca::Identificar(bool vertices, uint32_t fisica,
             segundo = p;
           }
         }
-        if (candidato && mejor.first <= std::max<size_t>(3, microcodigo.size() / 8) &&
-            (mejor < segundo || (mejor.first == 0 && mejor.second == 0))) {
+        // Gears of War 2's ground and floor vertex shaders came patched in 15 % of their words (D3D rewrote their
+        // exports for the pixel shader too) and tied between three library entries with the same code: up to a
+        // quarter of the words may differ, and a tie on both scores is the same code, so the first one is taken.
+        if (candidato && mejor.first <= std::max<size_t>(3, microcodigo.size() / 4) &&
+            (mejor <= segundo || (mejor.first == 0 && mejor.second == 0))) {
           elegido = candidato;
           parecido = true;
           if (d.avisos_parecido++ < kMaxAvisos) {

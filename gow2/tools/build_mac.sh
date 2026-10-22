@@ -86,6 +86,10 @@ export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-15G}"
 echo "== build ($JOBS jobs)"
 cmake --build gow2/out/sw -j "$JOBS"
 ls -la gow2/out/sw/gow2.nro gow2/out/shaders/gow2_shaders.dslib gow2/out/shaders/shadercache_dksh.bin
+# Every NRO's ELF is kept, named by the NRO's SHA-256 (first 16 digits): the console's rex_perfil.log and rex_crash.log
+# give image offsets, and only the ELF of the very NRO that ran turns them into names (gow2/out/elf/README).
+mkdir -p gow2/out/elf
+cp gow2/out/sw/gow2 "gow2/out/elf/$(shasum -a 256 gow2/out/sw/gow2.nro | cut -c1-16).elf"
 if [ -n "${SD:-}" ]; then
   mkdir -p "$SD"
   for f in sw/gow2.nro:gears2-nx.nro shaders/gow2_shaders.dslib:gow2_shaders.dslib \
