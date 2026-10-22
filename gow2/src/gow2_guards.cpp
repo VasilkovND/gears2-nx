@@ -18,6 +18,7 @@
 
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 
 namespace {
@@ -31,13 +32,23 @@ thread_local int t_attach_depth = 0;
 thread_local int t_chain_depth = 0;
 std::atomic<uint32_t> g_cuts{0};
 
+// Whether a guest address can be read (committed and readable): the [main] line reads whatever the main thread's
+// registers hold, and one of them once looked like an object but pointed at nothing (a fault in the logger itself).
+bool Legible(uint32_t address) {
+  auto* kernel = rex::system::kernel_state();
+  if (!kernel || address < 0x10000u) return false;
+  auto* heap = kernel->memory()->LookupHeap(address);
+  uint32_t protect = 0;
+  return heap && heap->QueryProtect(address, &protect) && (protect & rex::memory::kMemoryProtectRead);
+}
+
 std::string NameOf(uint8_t* base, uint32_t object) {
-  if (!object || object < 0x40000000u) return "?";
+  if (!object || object < 0x40000000u || !Legible(object) || !Legible(object + kObjClass)) return "?";
   const uint32_t index = REX_LOAD_U32(object + kObjNameIndex);
   const uint32_t table = REX_LOAD_U32(kGNames), count = REX_LOAD_U32(kGNames + 4);
-  if (!table || index >= count) return fmt::format("name#{}", index);
+  if (!table || index >= count || !Legible(table + index * 4)) return fmt::format("name#{}", index);
   const uint32_t entry = REX_LOAD_U32(table + index * 4);
-  if (!entry) return fmt::format("name#{}", index);
+  if (!entry || !Legible(entry) || !Legible(entry + kNameEntryText + 95)) return fmt::format("name#{}", index);
   std::string text;
   for (uint32_t i = 0; i < 96; ++i) {
     const char ch = char(*(base + entry + kNameEntryText + i));
@@ -128,8 +139,8 @@ extern "C" void gow2_stack_cut(PPCContext& ctx, uint8_t* base, const char* funct
     fresh = seen.size() < 4096 && seen.insert((uint64_t(std::hash<const void*>{}(function)) << 32) ^ lr).second;
   }
   if (fresh || (n & (n - 1)) == 0) {
-    const bool ue3 = object >= 0x40000000u && object < 0xC0000000u && REX_LOAD_U32(object) >= 0x82000000u &&
-                     REX_LOAD_U32(object) < 0x83300000u;
+    const bool ue3 = object >= 0x40000000u && object < 0xC0000000u && !(object & 3) && Legible(object) &&
+                     REX_LOAD_U32(object) >= 0x82000000u && REX_LOAD_U32(object) < 0x83300000u;
     REXLOG_WARN("[guard] stack cut #{} in {} (lr {:08X}, r1 {:08X}), r3 {:08X}{}", n, function, lr, ctx.r1.u32,
                 object, ue3 ? fmt::format(" = {} (class {})", NameOf(base, object),
                                           NameOf(base, REX_LOAD_U32(object + kObjClass)))
@@ -143,8 +154,8 @@ extern "C" void gow2_stack_cut(PPCContext& ctx, uint8_t* base, const char* funct
 // repeated, without a rebuild to find it.
 namespace {
 std::string Describe(uint8_t* base, uint32_t value) {
-  const bool ue3 = value >= 0x40000000u && value < 0xC0000000u && REX_LOAD_U32(value) >= 0x82000000u &&
-                   REX_LOAD_U32(value) < 0x83300000u;
+  const bool ue3 = value >= 0x40000000u && value < 0xC0000000u && !(value & 3) && Legible(value) &&
+                   REX_LOAD_U32(value) >= 0x82000000u && REX_LOAD_U32(value) < 0x83300000u;
   if (!ue3) return fmt::format("{:08X}", value);
   return fmt::format("{:08X} {} ({})", value, NameOf(base, value), NameOf(base, REX_LOAD_U32(value + kObjClass)));
 }
