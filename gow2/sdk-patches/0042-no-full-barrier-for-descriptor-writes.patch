@@ -1,0 +1,70 @@
+diff -ru a/include/rex/ui/deko3d/nucleo.h b/include/rex/ui/deko3d/nucleo.h
+--- a/include/rex/ui/deko3d/nucleo.h	2026-10-22 17:36:27
++++ b/include/rex/ui/deko3d/nucleo.h	2026-10-22 17:36:27
+@@ -158,8 +158,12 @@
+   // its end waits for every engine and invalidates the image, descriptor and shader caches. Texture uploads and
+   // descriptor writes go here, so the draws recorded before and after them in comandos() all see them (the
+   // Vulkan path's upload command buffer). Only with ConfigNucleo::kb_previos.
+-  DkCmdBuf ComandosPrevios() {
++  // copia = false: only inline descriptor writes (dkCmdBufPushData), which the 3D engine itself processes in order:
++  // they need the caches invalidated but not a barrier that waits for every engine (with partial submits that drained
++  // the GPU on each of them).
++  DkCmdBuf ComandosPrevios(bool copia = true) {
+     previos_usados_ = true;
++    previos_con_copia_ |= copia;
+     return previos_;
+   }
+   const ConfigNucleo& config() const { return config_; }
+@@ -251,6 +255,7 @@
+   DkCmdBuf comandos_ = nullptr;
+   DkCmdBuf previos_ = nullptr;
+   bool previos_usados_ = false;
++  bool previos_con_copia_ = false;
+   uint64_t ns_esperando_valla_ = 0;
+   DkMemBlock memoria_previos_ = nullptr;
+   DkMemBlock subida_ = nullptr, memoria_comandos_ = nullptr, codigo_ = nullptr, descriptores_ = nullptr,
+diff -ru a/src/ui/deko3d/nucleo.cpp b/src/ui/deko3d/nucleo.cpp
+--- a/src/ui/deko3d/nucleo.cpp	2026-10-22 17:36:27
++++ b/src/ui/deko3d/nucleo.cpp	2026-10-22 17:36:27
+@@ -376,9 +376,10 @@
+     return 0;
+   }
+   // Uploads (copy engine), descriptor writes and code are done and visible before comandos() runs
+-  dkCmdBufBarrier(previos_, DkBarrier_Full,
++  dkCmdBufBarrier(previos_, previos_con_copia_ ? DkBarrier_Full : DkBarrier_None,
+                   DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors | DkInvalidateFlags_Shader);
+   previos_usados_ = false;
++  previos_con_copia_ = false;
+   return dkCmdBufFinishList(previos_);
+ }
+ 
+diff -ru a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
+--- a/src/x360/deko/texturas.cpp	2026-10-22 17:36:27
++++ b/src/x360/deko/texturas.cpp	2026-10-22 17:36:27
+@@ -235,7 +235,7 @@
+   dkImageDescriptorInitialize(&d, &vista, false, false);
+   // In the pre-list: ordered before every draw of this submission, never under a draw that reads it (a freed slot is
+   // only reused after its fence).
+-  dkCmdBufPushData(nucleo_.ComandosPrevios(), nucleo_.DescriptoresImagen() + DkGpuAddr(ranura) * sizeof(d), &d,
++  dkCmdBufPushData(nucleo_.ComandosPrevios(false), nucleo_.DescriptoresImagen() + DkGpuAddr(ranura) * sizeof(d), &d,
+                    sizeof(d));
+ }
+ 
+@@ -365,7 +365,7 @@
+   s.wrapMode[0] = s.wrapMode[1] = s.wrapMode[2] = DkWrapMode_ClampToEdge;
+   DkSamplerDescriptor d;
+   dkSamplerDescriptorInitialize(&d, &s);
+-  dkCmdBufPushData(nucleo_.ComandosPrevios(), nucleo_.DescriptoresSampler(), &d, sizeof(d));
++  dkCmdBufPushData(nucleo_.ComandosPrevios(false), nucleo_.DescriptoresSampler(), &d, sizeof(d));
+   siguiente_descriptor_ = kDescriptoresReservados;
+   return true;
+ }
+@@ -417,7 +417,7 @@
+   DkSamplerDescriptor d;
+   dkSamplerDescriptorInitialize(&d, &s);
+   AsegurarTrabajo();
+-  dkCmdBufPushData(nucleo_.ComandosPrevios(), nucleo_.DescriptoresSampler() + DkGpuAddr(ranura) * sizeof(d), &d,
++  dkCmdBufPushData(nucleo_.ComandosPrevios(false), nucleo_.DescriptoresSampler() + DkGpuAddr(ranura) * sizeof(d), &d,
+                    sizeof(d));
+   samplers_.emplace(clave, ranura);
+   return ranura;

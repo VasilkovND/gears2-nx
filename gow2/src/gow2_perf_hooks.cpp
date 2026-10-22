@@ -240,3 +240,43 @@ REX_HOOK_RAW(sub_82AB1C28) {
   }
   __imp__sub_82AB1C28(ctx, base);
 }
+
+// sub_8295B610  the audio mixer's ramped accumulate: dst[i] += src[i] * gain over 256 floats, with the gain of each of
+//               the four vectors of a 64-byte group starting at start + k * step and every gain advancing by 4 * step
+//               per group (16 groups), as the VMX128 code (lvx128 / vmaddfp / stvx128). 4 % of the audio thread.
+//               NEON here; gow2_audio_mezcla_nativa = false goes back to the recompiled code.
+REXCVAR_DEFINE_BOOL(gow2_audio_mezcla_nativa, true, "Gears2",
+                    "La mezcla con rampa del audio del juego (sub_8295B610) en NEON en vez del codigo recompilado");
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
+REX_EXTERN(__imp__sub_8295B610);
+REX_HOOK_RAW(sub_8295B610) {
+#if defined(__aarch64__)
+  if (REXCVAR_GET(gow2_audio_mezcla_nativa)) {
+    // lvx / stvx: 16-byte aligned (the low 4 bits ignored), big-endian floats.
+    auto leer = [&](uint32_t ea) { return vreinterpretq_f32_u8(vrev32q_u8(vld1q_u8(base + (ea & ~0xFu)))); };
+    auto escribir = [&](uint32_t ea, float32x4_t v) {
+      vst1q_u8(base + (ea & ~0xFu), vrev32q_u8(vreinterpretq_u8_f32(v)));
+    };
+    const uint32_t d = ctx.r3.u32, s = ctx.r4.u32;
+    const float32x4_t p1 = leer(ctx.r6.u32), p2 = vaddq_f32(p1, p1), p3 = vaddq_f32(p2, p1), p4 = vaddq_f32(p2, p2);
+    float32x4_t g0 = leer(ctx.r5.u32), g1 = vaddq_f32(g0, p1), g2 = vaddq_f32(g0, p2), g3 = vaddq_f32(g0, p3);
+    for (uint32_t b = 0; b < 16; ++b) {
+      const uint32_t o = b * 64;
+      escribir(d + o, vaddq_f32(vmulq_f32(leer(s + o), g0), leer(d + o)));
+      escribir(d + o + 16, vaddq_f32(vmulq_f32(leer(s + o + 16), g1), leer(d + o + 16)));
+      escribir(d + o + 32, vaddq_f32(vmulq_f32(leer(s + o + 32), g2), leer(d + o + 32)));
+      escribir(d + o + 48, vaddq_f32(vmulq_f32(leer(s + o + 48), g3), leer(d + o + 48)));
+      g0 = vaddq_f32(g0, p4);
+      g1 = vaddq_f32(g1, p4);
+      g2 = vaddq_f32(g2, p4);
+      g3 = vaddq_f32(g3, p4);
+    }
+    return;
+  }
+#endif
+  __imp__sub_8295B610(ctx, base);
+}
