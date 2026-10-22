@@ -1335,8 +1335,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                           std::bit_cast<float>(Register(r + 1)), std::bit_cast<float>(Register(r + 2)),
                           std::bit_cast<float>(Register(r + 3)));
       }
-      REXLOG_INFO("[gpu] skin VS n{} vertices (index base {:08X}, {}-bit):{};{}", vs_->numero, dma, idx32 ? 32 : 16,
-                  verts, cs);
+      REXLOG_INFO("[gpu] skin VS n{} vertices (index base {:08X}, {}-bit, endian {}):{};{}", vs_->numero, dma,
+                  idx32 ? 32 : 16, Register(g::XE_GPU_REG_VGT_DMA_SIZE) >> 30, verts, cs);
     }
   }
 
