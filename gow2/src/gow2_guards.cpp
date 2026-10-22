@@ -12,7 +12,9 @@
 #include "gow2_pch.h"
 
 #include <atomic>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 
 #include <rex/logging.h>
 
@@ -95,4 +97,29 @@ REX_HOOK_RAW(sub_8255A5C0) {
   ++t_chain_depth;
   __imp__sub_8255A5C0(ctx, base);
   --t_chain_depth;
+}
+
+// The generic guard (make_nx_pch.py, point 5): any recompiled function entered with the guest stack within 32 KB of
+// its limit lands here and returns at once with r3 = 0, so a runaway recursion anywhere ends in a cut instead of a
+// crash. Logged once per function and call site (lr), with the object in r3 when it looks like a UE3 object.
+extern "C" void gow2_stack_cut(PPCContext& ctx, uint8_t* base, const char* function) {
+  static std::atomic<uint32_t> cuts{0};
+  static std::mutex mutex;
+  static std::unordered_set<uint64_t> seen;
+  const uint32_t n = cuts.fetch_add(1) + 1;
+  const uint32_t lr = uint32_t(ctx.lr), object = ctx.r3.u32;
+  bool fresh;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    fresh = seen.size() < 4096 && seen.insert((uint64_t(std::hash<const void*>{}(function)) << 32) ^ lr).second;
+  }
+  if (fresh || (n & (n - 1)) == 0) {
+    const bool ue3 = object >= 0x40000000u && object < 0xC0000000u && REX_LOAD_U32(object) >= 0x82000000u &&
+                     REX_LOAD_U32(object) < 0x83300000u;
+    REXLOG_WARN("[guard] stack cut #{} in {} (lr {:08X}, r1 {:08X}), r3 {:08X}{}", n, function, lr, ctx.r1.u32,
+                object, ue3 ? fmt::format(" = {} (class {})", NameOf(base, object),
+                                          NameOf(base, REX_LOAD_U32(object + kObjClass)))
+                            : std::string());
+  }
+  ctx.r3.u64 = 0;
 }

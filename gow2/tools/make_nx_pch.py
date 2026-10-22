@@ -10,6 +10,7 @@ Inferno's; the second is a no-op here unless the codegen emits that macro):
   2. REX_RAW_ADDR_W(x, n): DS2's codegen writes it for stores; outside the official-SDK
      NX memory model it is REX_RAW_ADDR(x).
   3. The interrupt locks, per thread (below).
+  5. A stack guard in REX_FUNC_PROLOGUE() (below).
   4. __builtin_arm_isb for GCC: the PC port's patch_spin_hints.py writes clang's builtin for the
      Xenon delay hints of spin loops; devkitA64's GCC has no such builtin, the same ISB inline.
 
@@ -99,6 +100,55 @@ inline i32& ppc_msr_profundidad_() {
   } while (0)
 """
 text = text[:i] + NEW_LOCKS + text[j:]
+
+# 5. A stack guard in every recompiled function: REX_FUNC_PROLOGUE() (the first statement of each) returns at once,
+#    answering 0, when the guest stack pointer is within kGuardMargin of its thread's stack limit (the KPCR's
+#    stack_end_ptr at r13 + 0x74). Gears of War 2 recursed without end through objects that pointed at themselves
+#    (each walk a different function), and every one of those crashed with a fault below the stack; with the guard
+#    the deepest call of any such recursion is cut, the chain unwinds normally, and src/gow2_guards.cpp logs where
+#    it happened (gow2_stack_cut). A few instructions per call.
+PROLOGUE_GCC = """#elif defined(__GNUC__)
+#define REX_FUNC_PROLOGUE()         \\
+  do {                              \\
+    if (((size_t)base & 0x1F) != 0) \\
+      __builtin_unreachable();      \\
+  } while (0)
+#else
+#define REX_FUNC_PROLOGUE() ((void)0)
+#endif
+#endif"""
+PROLOGUE_GUARD = """#elif defined(__GNUC__)
+// Switch (make_nx_pch.py, point 5): the stack guard.
+#define REX_FUNC_PROLOGUE()                                    \\
+  do {                                                         \\
+    if (((size_t)base & 0x1F) != 0)                            \\
+      __builtin_unreachable();                                 \\
+    if (__builtin_expect(gow2_stack_near_limit(ctx, base), 0)) { \\
+      gow2_stack_cut(ctx, base, __func__);                     \\
+      return;                                                  \\
+    }                                                          \\
+  } while (0)
+#else
+#define REX_FUNC_PROLOGUE() ((void)0)
+#endif
+#endif
+
+// Point 5's helpers: the guest stack pointer against the KPCR's stack_end_ptr (r13 + 0x74), and the cut itself
+// (src/gow2_guards.cpp: answers 0 and logs the call site once).
+constexpr uint32_t kGuardMargin = 0x8000;
+extern "C" void gow2_stack_cut(PPCContext& ctx, uint8_t* base, const char* function);
+inline bool gow2_stack_near_limit(const PPCContext& ctx, const uint8_t* base) {
+  const uint32_t pcr = ctx.r13.u32;
+  if (!pcr) return false;
+  uint32_t raw;
+  __builtin_memcpy(&raw, base + pcr + 0x74, 4);
+  const uint32_t limit = __builtin_bswap32(raw);
+  return limit && ctx.r1.u32 < limit + kGuardMargin;
+}"""
+if PROLOGUE_GUARD.split("\n")[1] not in text:
+    if text.count(PROLOGUE_GCC) != 1:
+        sys.exit("REX_FUNC_PROLOGUE (GCC, no profiling) not found exactly once")
+    text = text.replace(PROLOGUE_GCC, PROLOGUE_GUARD)
 
 if "__builtin_arm_isb" not in text:
     text = text.rstrip() + '''
