@@ -113,7 +113,8 @@ done
 STAMP="$CG/inputs.sha"
 INPUTS=$( (cat "$CG/game/default.xex" "$CG/gow2_manifest.toml" "$CG"/hints/*.toml "$REXGLUE" \
   "$PC"/tools/patch_switch_traps.py "$PC"/tools/patch_game_patches.py "$PC"/tools/patch_memory_barriers.py \
-  "$PC"/tools/patch_spin_hints.py; echo "barriers=$BARRIERS") \
+  "$PC"/tools/patch_spin_hints.py "$ROOT"/gow2/tools/patch_leaf_prologue.py \
+  "$ROOT"/gow2/tools/patch_stack_access.py; echo "barriers=$BARRIERS") \
   | shasum -a 256 | cut -d' ' -f1)
 if [ "$(cat "$STAMP" 2>/dev/null)" != "$INPUTS" ] || [ ! -f "$CG/generated/default/sources.cmake" ]; then
   # Generated and fixed in a staging folder, then only the files whose text changed are copied over generated/:
@@ -148,6 +149,12 @@ import patch_spin_hints
 sys.exit(patch_spin_hints.main(sys.argv[3:], allowed_root=Path(sys.argv[2]).resolve()))
 PY
   tail -3 "$CG/patch_spin_hints.log"
+  # Ours: functions that call nothing get the prologue without the stack guard (make_nx_pch.py, point 5b).
+  (cd "$ST" && python3 "$ROOT/gow2/tools/patch_leaf_prologue.py" generated/default/*.cpp) > "$CG/patch_leaf_prologue.log"
+  tail -1 "$CG/patch_leaf_prologue.log"
+  # And the guest stack's accesses without volatile (make_nx_pch.py, point 6).
+  (cd "$ST" && python3 "$ROOT/gow2/tools/patch_stack_access.py" generated/default/*.cpp) > "$CG/patch_stack_access.log"
+  tail -1 "$CG/patch_stack_access.log"
   python3 - "$ST/generated/default" "$CG/generated/default" <<'PY'
 import filecmp, os, shutil, sys
 new, old = sys.argv[1:]

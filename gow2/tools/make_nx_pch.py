@@ -150,6 +150,39 @@ if PROLOGUE_GUARD.split("\n")[1] not in text:
         sys.exit("REX_FUNC_PROLOGUE (GCC, no profiling) not found exactly once")
     text = text.replace(PROLOGUE_GCC, PROLOGUE_GUARD)
 
+# 5b. The guard-free prologue tools/patch_leaf_prologue.py gives the functions that call nothing (they cannot deepen a
+#     recursion; the register save/restore helpers are among them).
+if "REX_FUNC_PROLOGUE_LEAF" not in text:
+    text = text.rstrip() + """
+
+// Switch (make_nx_pch.py, point 5b): the prologue of functions that call nothing, without the stack guard.
+#if defined(__GNUC__)
+#define REX_FUNC_PROLOGUE_LEAF()        \\
+  do {                                  \\
+    if (((size_t)base & 0x1F) != 0)     \\
+      __builtin_unreachable();          \\
+  } while (0)
+#else
+#define REX_FUNC_PROLOGUE_LEAF() ((void)0)
+#endif
+"""
+
+# 6. The guest stack accesses tools/patch_stack_access.py marks: plain (memcpy, alias-safe) instead of volatile, so the
+#    compiler may keep a spilled local in a register or pair the helpers' stores. The stack belongs to one thread.
+if "REX_SLOAD_U32" not in text:
+    text = text.rstrip() + """
+
+// Switch (make_nx_pch.py, point 6): guest stack accesses (r1), without volatile.
+#define REX_SLOAD_U8(x) ({ u8 rex_sv_; __builtin_memcpy(&rex_sv_, base + (u32)(x), 1); rex_sv_; })
+#define REX_SLOAD_U16(x) ({ u16 rex_sv_; __builtin_memcpy(&rex_sv_, base + (u32)(x), 2); __builtin_bswap16(rex_sv_); })
+#define REX_SLOAD_U32(x) ({ u32 rex_sv_; __builtin_memcpy(&rex_sv_, base + (u32)(x), 4); __builtin_bswap32(rex_sv_); })
+#define REX_SLOAD_U64(x) ({ u64 rex_sv_; __builtin_memcpy(&rex_sv_, base + (u32)(x), 8); __builtin_bswap64(rex_sv_); })
+#define REX_SSTORE_U8(x, y) ({ u8 rex_sv_ = (u8)(y); __builtin_memcpy(base + (u32)(x), &rex_sv_, 1); })
+#define REX_SSTORE_U16(x, y) ({ u16 rex_sv_ = __builtin_bswap16(y); __builtin_memcpy(base + (u32)(x), &rex_sv_, 2); })
+#define REX_SSTORE_U32(x, y) ({ u32 rex_sv_ = __builtin_bswap32(y); __builtin_memcpy(base + (u32)(x), &rex_sv_, 4); })
+#define REX_SSTORE_U64(x, y) ({ u64 rex_sv_ = __builtin_bswap64(y); __builtin_memcpy(base + (u32)(x), &rex_sv_, 8); })
+"""
+
 if "__builtin_arm_isb" not in text:
     text = text.rstrip() + '''
 

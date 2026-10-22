@@ -40,7 +40,9 @@ if(NOT _gow2_tree_rc EQUAL 0)
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${GOW2_GENERATED}/gow2_pch.h"
-    "${GOW2_GENERATED}/sources.cmake")
+    "${GOW2_GENERATED}/sources.cmake"
+    "${CMAKE_CURRENT_LIST_DIR}/../tools/make_nx_pch.py"
+    "${CMAKE_CURRENT_LIST_DIR}/../tools/prepare_tree.py")
 
 set(REXGLUE_RECOMP_DEBUG_INFO "none" CACHE STRING
     "Debug info level for generated code: line-tables-only, full, or none")
