@@ -28,6 +28,7 @@ OUT="$ROOT/gow2/out"
 CG="$OUT/codegen"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN)}"
 BARRIERS="${BARRIERS:-1}"
+LOCALREGS="${LOCALREGS:-1}"
 
 GOW2_PC_COMMIT="19d9e79313c21b8d61de61d64d517f5c9e5220e6"   # 2026-10-20, v0.2.5
 REXGLUE_TAG="v0.10.0"
@@ -114,7 +115,8 @@ STAMP="$CG/inputs.sha"
 INPUTS=$( (cat "$CG/game/default.xex" "$CG/gow2_manifest.toml" "$CG"/hints/*.toml "$REXGLUE" \
   "$PC"/tools/patch_switch_traps.py "$PC"/tools/patch_game_patches.py "$PC"/tools/patch_memory_barriers.py \
   "$PC"/tools/patch_spin_hints.py "$ROOT"/gow2/tools/patch_leaf_prologue.py \
-  "$ROOT"/gow2/tools/patch_stack_access.py "$ROOT"/gow2/tools/patch_inline_calls.py; echo "barriers=$BARRIERS"
+  "$ROOT"/gow2/tools/patch_stack_access.py "$ROOT"/gow2/tools/patch_inline_calls.py \
+  "$ROOT"/gow2/tools/patch_local_regs.py; echo "barriers=$BARRIERS localregs=$LOCALREGS check=${PLR_CHECK:-0}"
   # The hooked functions (patch_inline_calls.py keeps their calls): a new hook regenerates the code.
   grep -rhoE "(REX_HOOK_RAW|REX_HOOK|REX_STUB_LOG|REX_STUB|REX_FUNC)\( *sub_[0-9A-Fa-f]{8}" \
     "$ROOT/gow2/src" "$ROOT/sdk/src" "$ROOT/sdk/include" | sort -u) \
@@ -162,6 +164,15 @@ PY
   (cd "$ST" && python3 "$ROOT/gow2/tools/patch_inline_calls.py" "$ROOT/gow2/src" "$ROOT/sdk/src" "$ROOT/sdk/include" \
     -- generated/default/gow2_recomp.*.cpp) > "$CG/patch_inline_calls.log"
   tail -1 "$CG/patch_inline_calls.log" | cut -c1-160
+  # And the guest registers in host locals inside each function, with ctx exact only where a call or a return needs
+  # it (the registers each function reads and changes, worked out over the whole call graph). LOCALREGS=0 skips it;
+  # PLR_CHECK=1 builds the check version (calls verify the analysis at run time, src/gow2_guards.cpp).
+  if [ "$LOCALREGS" = 1 ]; then
+    (cd "$ST" && python3 "$ROOT/gow2/tools/patch_local_regs.py" generated/default/gow2_inline_helpers.h \
+      "$ROOT/gow2/src" "$ROOT/sdk/src" "$ROOT/sdk/include" -- generated/default/gow2_recomp.*.cpp) \
+      > "$CG/patch_local_regs.log" 2>&1 || { tail -20 "$CG/patch_local_regs.log"; exit 1; }
+    tail -1 "$CG/patch_local_regs.log"
+  fi
   python3 - "$ST/generated/default" "$CG/generated/default" <<'PY'
 import filecmp, os, shutil, sys
 new, old = sys.argv[1:]

@@ -183,6 +183,14 @@ if "REX_SLOAD_U32" not in text:
 #define REX_SSTORE_U64(x, y) ({ u64 rex_sv_ = __builtin_bswap64(y); __builtin_memcpy(base + (u32)(x), &rex_sv_, 8); })
 """
 
+# 7. The check build of tools/patch_local_regs.py (PLR_CHECK=1) reports through this (src/gow2_guards.cpp).
+if "gow2_regcheck_fail" not in text:
+    text = text.rstrip() + """
+
+// Switch (make_nx_pch.py, point 7): tools/patch_local_regs.py's check build.
+extern "C" void gow2_regcheck_fail(const char* function, const char* callee, int line);
+"""
+
 if "__builtin_arm_isb" not in text:
     text = text.rstrip() + '''
 

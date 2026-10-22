@@ -172,3 +172,16 @@ void gow2_log_main_thread() {
                 Describe(base, ctx.r3.u32), Describe(base, ctx.r30.u32), Describe(base, ctx.r31.u32));
   }
 }
+
+// The check build of tools/patch_local_regs.py (PLR_CHECK=1): a call changed a register the analysis said it keeps.
+// Logged once per call site (function and line of its body), at most 256 sites.
+extern "C" void gow2_regcheck_fail(const char* function, const char* callee, int line) {
+  static std::mutex mutex;
+  static std::unordered_set<uint64_t> seen;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    const uint64_t key = (uint64_t(std::hash<const void*>{}(function)) << 20) ^ uint64_t(line);
+    if (seen.size() >= 256 || !seen.insert(key).second) return;
+  }
+  REXLOG_WARN("[regcheck] {} line {}: the call to {} changed a register it should keep", function, line, callee);
+}
