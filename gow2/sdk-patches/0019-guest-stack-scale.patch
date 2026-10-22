@@ -1,0 +1,35 @@
+diff -ru a/src/system/xthread.cpp b/src/system/xthread.cpp
+--- a/src/system/xthread.cpp	2026-10-22 11:59:05
++++ b/src/system/xthread.cpp	2026-10-22 11:59:05
+@@ -43,6 +43,9 @@
+ #include "../core/threading_switch.h"
+ #endif
+ 
++REXCVAR_DEFINE_INT32(guest_stack_scale, 4, "Kernel",
++                     "Guest thread stacks are this many times what the game asks for (Gears of War 2 overflowed one "
++                     "loading a level on the Switch); 1 = the game's own sizes");
+ REXCVAR_DEFINE_BOOL(ignore_thread_priorities, true, "Kernel",
+                     "Ignores game-specified thread priorities");
+ 
+@@ -84,6 +87,11 @@
+   if (creation_params_.stack_size < 16 * 1024) {
+     creation_params_.stack_size = 16 * 1024;
+   }
++  // Larger guest stacks (guest_stack_scale), up to 8 MB each.
++  if (guest_thread_ && REXCVAR_GET(guest_stack_scale) > 1) {
++    const uint64_t scaled = uint64_t(creation_params_.stack_size) * uint32_t(REXCVAR_GET(guest_stack_scale));
++    creation_params_.stack_size = uint32_t(std::min<uint64_t>(scaled, 8u * 1024 * 1024));
++  }
+ 
+   if (!guest_thread_) {
+     host_object_ = true;
+@@ -371,6 +379,9 @@
+   if (!AllocateStack(creation_params_.stack_size)) {
+     return X_STATUS_NO_MEMORY;
+   }
++
++  REXLOG_INFO("XThread {:08X}: guest stack {:08X}-{:08X} ({} KB), start {:08X}", handle(), stack_limit_, stack_base_,
++              creation_params_.stack_size / 1024, creation_params_.start_address);
+ 
+   // Allocate thread scratch.
+   // This is used by interrupts/APCs/etc so we can round-trip pointers through.
