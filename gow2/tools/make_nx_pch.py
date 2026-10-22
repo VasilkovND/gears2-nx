@@ -188,7 +188,8 @@ if "gow2_regcheck_fail" not in text:
     text = text.rstrip() + """
 
 // Switch (make_nx_pch.py, point 7): tools/patch_local_regs.py's check build.
-extern "C" void gow2_regcheck_fail(const char* function, const char* callee, int line);
+extern "C" void gow2_regcheck_fail(const char* function, const char* callee, int site, const char* regs,
+                                   const uint64_t* before, const PPCContext* ctx);
 """
 
 if "__builtin_arm_isb" not in text:

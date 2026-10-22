@@ -168,7 +168,7 @@ PY
   # it (the registers each function reads and changes, worked out over the whole call graph). LOCALREGS=0 skips it;
   # PLR_CHECK=1 builds the check version (calls verify the analysis at run time, src/gow2_guards.cpp).
   if [ "$LOCALREGS" = 1 ]; then
-    (cd "$ST" && python3 "$ROOT/gow2/tools/patch_local_regs.py" generated/default/gow2_inline_helpers.h \
+    (cd "$ST" && PLR_MAP="$CG/patch_local_regs.check.map" python3 "$ROOT/gow2/tools/patch_local_regs.py" generated/default/gow2_inline_helpers.h \
       "$ROOT/gow2/src" "$ROOT/sdk/src" "$ROOT/sdk/include" -- generated/default/gow2_recomp.*.cpp) \
       > "$CG/patch_local_regs.log" 2>&1 || { tail -20 "$CG/patch_local_regs.log"; exit 1; }
     tail -1 "$CG/patch_local_regs.log"

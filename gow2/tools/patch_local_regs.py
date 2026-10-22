@@ -793,7 +793,7 @@ def ctype(r):
     return "PPCRegister"
 
 
-def rewrite(f, ref, mod, liveout, hooked, defined):
+def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
     body, n = f.body, f.n
     if not f.used:
         return None
@@ -903,15 +903,27 @@ def rewrite(f, ref, mod, liveout, hooked, defined):
                     return "{ " + flush(fm, names) + text + reload(m & f.used, names) + " }"
                 # PLR_CHECK=1: the registers not read back must come back unchanged (MOD), and the dirty ones not
                 # written back get a poison value the callee must not use (REF).
+                # Each site has a number (sites[0], the file's base, plus a count): the poison's low word is
+                # 0x5E000000 | number, so a fault on a poisoned address names the site (PLR_MAP lists them).
+                sid = sites["base"] + len(sites["list"])
+                sites["list"].append(f"{sid:06X} {f.name} line {i} calls {target or 'bctrl'}")
                 gp = [x for x in names if x[0] in "rf" and x[1:].isdigit()]
                 poison = [x for x in gp if (here & ~fm) >> BIT[x] & 1]
                 keep = [x for x in gp if not (m >> BIT[x] & 1) and live_out[i] >> BIT[x] & 1]
-                pre = "".join(f"ctx.{x}.u64 = 0x5EAD5EAD5EAD5EADull; " for x in poison)
-                pre += "".join(f"const uint64_t chk_{x} = ctx.{x}.u64; " for x in keep)
-                cond = " || ".join(f"ctx.{x}.u64 != chk_{x}" for x in keep)
+                pv = 0x5EAD5EAD00000000 | 0x5E000000 | sid
+                # (and put back after the call: the poison is a change of ctx this function's analysis does not
+                # know about, and a caller trusting ctx to be unchanged there would read it)
+                pre = ""
+                if poison:
+                    pre = "const uint64_t pz_[] = {" + ", ".join(f"ctx.{x}.u64" for x in poison) + "}; "
+                pre += "".join(f"ctx.{x}.u64 = 0x{pv:X}ull; " for x in poison)
+                if keep:
+                    pre += "const uint64_t chk_[] = {" + ", ".join(f"ctx.{x}.u64" for x in keep) + "}; "
+                cond = " || ".join(f"ctx.{x}.u64 != chk_[{k}]" for k, x in enumerate(keep))
                 post = (f" if (__builtin_expect({cond}, 0)) gow2_regcheck_fail(__func__, \"{target or 'bctrl'}\", "
-                        f"{i});" if keep else "")
-                return "{ " + flush(fm, names) + pre + text + post + reload(m & f.used, names) + " }"
+                        f"0x{sid:X}, \"{' '.join(keep)}\", chk_, &ctx);" if keep else "")
+                unpoison = "".join(f" ctx.{x}.u64 = pz_[{k}];" for k, x in enumerate(poison))
+                return "{ " + flush(fm, names) + pre + text + post + unpoison + reload(m & f.used, names) + " }"
 
             spans = find_indirect(new)
             kinds = [k for k, _ in f.calls[i] if k in ("i", "s")]
@@ -932,6 +944,8 @@ def rewrite(f, ref, mod, liveout, hooked, defined):
 def phase3(args):
     path, helpers, ref, mod, liveout, hooked, defined = args
     lines, funcs = parse_file(path, helpers)
+    m = re.search(r"gow2_recomp\.(\d+)\.cpp$", path)
+    sites = {"base": (int(m.group(1)) if m else 255) << 16, "list": []}
     out = []
     last = 0
     done = skipped = 0
@@ -939,7 +953,7 @@ def phase3(args):
         out.extend(lines[last:a + 1])
         new = None
         if f is not None and f.ok:
-            new = rewrite(f, ref, mod, liveout, hooked, defined)
+            new = rewrite(f, ref, mod, liveout, hooked, defined, sites)
             done += 1
         elif f is not None:
             skipped += 1
@@ -947,7 +961,7 @@ def phase3(args):
         last = b
     out.extend(lines[last:])
     open(path, "w", encoding="utf-8", errors="surrogateescape").write("\n".join(out))
-    return done, skipped
+    return done, skipped, sites["list"]
 
 
 def main(argv):
@@ -982,9 +996,14 @@ def main(argv):
                          "pres": {k: v["pres"] for k, v in summ.items() if v}},
                         open(os.environ["PLR_DUMP"], "wb"))
         done = skipped = 0
-        for d, s in ex.map(phase3, [(p, helpers, ref, mod, liveout, hooked, defined) for p in files]):
+        site_list = []
+        for d, s, sl in ex.map(phase3, [(p, helpers, ref, mod, liveout, hooked, defined) for p in files]):
             done += d
             skipped += s
+            site_list.extend(sl)
+        if CHECK and os.environ.get("PLR_MAP"):
+            with open(os.environ["PLR_MAP"], "w") as fo:
+                fo.write("\n".join(site_list) + "\n")
     nv_ref = sum(1 for k, v in ref.items() if summ.get(k) and v & NONVOL & ~mask(["r1", "r13"]))
     if os.environ.get("PLR_DEBUG"):
         odd = {k: v & ~ABI_REF for k, v in ref.items() if summ.get(k) and v & ~ABI_REF}
