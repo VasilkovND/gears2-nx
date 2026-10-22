@@ -117,6 +117,8 @@ REXCVAR_DEFINE_INT32(gow2_auto_captura_s, 5, "Gears2",
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_primero_s, 120, "Gears2",
                      "Segundo de juego del primer volcado automatico de las texturas resueltas de un fotograma");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_cada_s, 300, "Gears2", "Segundos entre volcados automaticos; 0 = solo el primero");
+REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
+                     "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
 REXCVAR_DEFINE_INT32(gow2_traza_cada_s, 60, "Gears2", "Segundos entre trazas de la estructura de un fotograma pesado");
 REXCVAR_DEFINE_INT32(gow2_trazas_max, 20, "Gears2", "Trazas de fotograma como mucho");
@@ -1609,11 +1611,14 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const int32_t max_dumps = REXCVAR_GET(gow2_auto_volcados_max);
     if (auto_dumps_ < uint32_t(std::max(max_dumps, 0))) {
       if (next_auto_dump_s_ < 0) next_auto_dump_s_ = REXCVAR_GET(gow2_auto_volcado_primero_s);
-      if (t >= next_auto_dump_s_) {
+      // Only a frame of the game itself (the 3D scene: hundreds of draws), not a menu or loading screen: dumps by
+      // time alone caught Gears of War 2's menus (270 draws) while the problem was in the level.
+      if (t >= next_auto_dump_s_ && last_frame_draws_ >= uint64_t(std::max(REXCVAR_GET(gow2_auto_volcado_dibujos), 0))) {
         ++auto_dumps_;
         const int32_t gap = REXCVAR_GET(gow2_auto_volcado_cada_s);
         next_auto_dump_s_ = gap > 0 ? t + gap : 1e30;
-        REXLOG_INFO("[gpu] automatic frame dump {} at {:.0f} s", auto_dumps_, t);
+        REXLOG_INFO("[gpu] automatic frame dump {} at {:.0f} s ({} draws in the previous frame)", auto_dumps_, t,
+                    last_frame_draws_);
         destinos_->PedirVolcado();
         // And every draw of that frame in the log, as the manual dump (ZL + ZR + Left) does.
         draw_tracing_ = true;
@@ -1784,6 +1789,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       REXLOG_INFO("[draws] trace {} of a light frame ({} draws in the previous one)", draw_traces_, frame_.draws);
     }
     if (first_swap_ == Clock::time_point{}) first_swap_ = now;
+    last_frame_draws_ = frame_.draws;
     frame_ = {};
   }
 
@@ -1971,6 +1977,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t clear_rect_ = 0;          // guest buffer with the emulated clears' rectangle
   uint32_t rect_buffer_ = 0;         // guest buffer with the rectangle lists made quads (ExpandRectList)
   uint32_t rect_buffer_size_ = 0;
+  uint64_t last_frame_draws_ = 0;   // geometry draws of the last finished frame
   uint64_t rect_lists_ = 0;
   uint32_t rect_unexpanded_logged_ = 0;
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection
