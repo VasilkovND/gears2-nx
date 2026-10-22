@@ -1,5 +1,7 @@
 #include "shader_recompiler.h"
 
+#include <cctype>
+#include <cstring>
 #include <regex>
 #include <cstdlib>
 #include <cstdio>
@@ -198,10 +200,43 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
      * from the vertex buffer bound whole as a storage buffer); the renderer describes each one at runtime (D3D patches
      * format, stride and offset into the fetch per draw), at the element's position in the declaration.
      */
-    if (instr.srcRegister != 0 || instr.srcSwizzle != 0)
+    /*
+     * r0.x rewritten before this fetch (Gears of War 2's occlusion boxes: index / 36 picks the box, a table its corner,
+     * and the corner is fetched at r0.x): the index is the shader's, not the vertex's, though the register is r0.x.
+     * The body so far is scanned for an assignment to r0 that writes x.
+     */
+    bool r0Reescrito = false;
+    if (instr.srcRegister == 0 && instr.srcSwizzle == 0)
+    {
+        const size_t cuerpo = out.find("\n{\n", out.find("void main("));
+        for (size_t p = out.find("r0", cuerpo); cuerpo != std::string::npos && p != std::string::npos && !r0Reescrito;
+             p = out.find("r0", p + 2))
+        {
+            if (p > 0 && (std::isalnum(uint8_t(out[p - 1])) || out[p - 1] == '_')) continue;
+            size_t q = p + 2;
+            bool conX = false;
+            if (q < out.size() && out[q] == '.')
+            {
+                ++q;
+                while (q < out.size() && std::strchr("xyzw", out[q])) conX |= out[q++] == 'x';
+            }
+            else
+            {
+                conX = true;
+            }
+            if (q + 3 <= out.size() && out.compare(q, 3, " = ") == 0 && conX)
+            {
+                // Not "float4 r0 = ...": the declaration with the vertex index.
+                const size_t inicio = out.rfind('\n', p);
+                r0Reescrito = out.compare(inicio + 1, p - inicio - 1, std::string(p - inicio - 1, '\t')) == 0;
+            }
+        }
+    }
+    if (instr.srcRegister != 0 || instr.srcSwizzle != 0 || r0Reescrito)
     {
         usaLecturaManual = true;
         const uint32_t k = elementOrdinal.at(address);
+        if (r0Reescrito && k < 32) manualesR0 |= 1u << k;
         print("remapInput(dsVfetch({}, r{}.{}, {}), g_UboLecturas.v[{}].w).", k, uint32_t(instr.srcRegister),
             SWIZZLES[instr.srcSwizzle & 0x3], instr.isIndexRounded ? "true" : "false", k);
         printDstSwizzle(instr.dstSwizzle, true);
@@ -2108,6 +2143,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     if (usaLecturaManual)
     {
         out.insert(marcaTrasInclude, kLecturaManualHlsl);
+    }
+    if (manualesR0)
+    {
+        // Kept alive by a test no draw passes (an unused spec constant could be dropped): the runtime reads its default
+        // value from the SPIR-V (gow2_shaders.cpp) to know these elements are read by the shader itself.
+        out.insert(marcaTrasInclude, fmt::format("[[vk::constant_id(1)]] const uint g_ManualesR0 = {}u;\n", manualesR0));
+        const std::string marca = "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+        for (size_t p = out.find(marca); p != std::string::npos; p = out.find(marca, p + 1))
+        {
+            const std::string extra = "\tif (g_ManualesR0 == 0xFFFFFFFFu) oPos = 0.0;\n";
+            out.insert(p + marca.size(), extra);
+            p += extra.size();
+        }
     }
     if (usaTfetchVertice)
     {

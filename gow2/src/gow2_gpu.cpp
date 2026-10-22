@@ -38,6 +38,7 @@ void gow2_log_main_thread();  // src/gow2_guards.cpp
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -131,6 +132,12 @@ REXCVAR_DEFINE_BOOL(gow2_sin_prepaso_z, true, "Gears2",
                     "el pase base (GEQUAL) se descartaba: el mundo salia negro");
 REXCVAR_DEFINE_BOOL(gow2_consultas_siempre_visibles, false, "Gears2",
                     "Consultas de oclusion: cada segundo ZPD cuenta como el final de una consulta visible, aunque no lleve la marca de D3D (prueba)");
+REXCVAR_DEFINE_BOOL(gow2_oclusion_real, true, "Gears2",
+                    "Consultas de oclusion reales: la GPU cuenta los pixeles de la caja de cada consulta que pasan la "
+                    "profundidad, y el juego deja de dibujar lo que queda tapado. false = todo visible, como antes");
+REXCVAR_DEFINE_INT32(gow2_oclusion_espera_ms, 40, "Gears2",
+                     "Consultas de oclusion reales: milisegundos desde el final de una consulta que el juego puede "
+                     "esperar su resultado; pasado ese tiempo se le contesta visible");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
@@ -544,7 +551,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       {
         std::unique_lock<std::mutex> lock(ring_mutex_);
         ring_dormido_.store(true, std::memory_order_seq_cst);
-        ring_cv_.wait_for(lock, std::chrono::milliseconds(4), [&] {
+        ring_cv_.wait_for(lock, std::chrono::milliseconds(pending_queries_.empty() ? 4 : 1), [&] {
           return !active_.load(std::memory_order_acquire) ||
                  write_pointer_.load(std::memory_order_seq_cst) != read ||
                  ring_generation_.load(std::memory_order_acquire) != generation;
@@ -555,6 +562,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       Report();
+      OcclusionPoll();
       const uint32_t gen = ring_generation_.load(std::memory_order_acquire);
       if (gen != generation) {
         generation = gen;
@@ -569,6 +577,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       if (written == read) {
         continue;
       }
+      ring_activity_ = std::chrono::steady_clock::now();
       Reader reader;
       reader.base = memory_->TranslatePhysical(base);
       reader.mask = words - 1;
@@ -682,6 +691,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     REXLOG_INFO("[gpu] draws: {} geometry, {} sent to the renderer: {} drawn, {} rejected by it; skipped here: "
                 "{} without VS, {} without PS (the renderer logs each rejection cause once)",
                 geometria_, enviados_, dibujados, rechazados, sin_vs_, sin_ps_);
+    if (destinos_) {
+      uint64_t q[5];
+      destinos_->EstadisticasOclusion(q);
+      REXLOG_INFO("[gpu] occlusion: {} queries counted on the GPU, {} without room; {} answered with their count ({} "
+                  "of them hidden, {:.1f} ms after their end on average, {} samples, max {}), {} answered visible after "
+                  "waiting too long, {} waiting",
+                  q[0], q[1], queries_answered_, queries_hidden_,
+                  queries_answered_ ? double(queries_wait_us_) / 1000.0 / double(queries_answered_) : 0.0, q[3], q[4],
+                  queries_timed_out_, pending_queries_.size());
+    }
     // Which unknown vertex shaders the skipped draws had, the most frequent first, with one draw's state each.
     std::vector<std::pair<uint64_t, uint64_t>> skips(unknown_vs_skips_.begin(), unknown_vs_skips_.end());
     std::sort(skips.begin(), skips.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
@@ -2035,7 +2054,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 #endif
 
   // EVENT_WRITE_ZPD, as the SDK's CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD: D3D marks the
-  // structure with 0xFFFFFEED on Issue(END), and the counts are faked.
+  // structure with 0xFFFFFEED on Issue(END) and GetData answers "not yet" while the mark is there. D3D's query is 64
+  // bytes, the begin structure at +0x20 and the end one at +0 (the count is end minus begin, the begin one stays
+  // zeroed). With gow2_oclusion_real the renderer counts on the GPU the samples drawn between the two; the end keeps
+  // its mark until that count is back (OcclusionPoll), or gow2_oclusion_espera_ms passed (then it is faked visible).
   void OcclusionQuery(uint32_t address) {
     if (!address) {
       return;
@@ -2044,6 +2066,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     auto* counts = memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(address);
     const bool end_via_z_pass = counts->ZPass_A == kQueryFinished || counts->ZPass_B == kQueryFinished;
     const bool end_via_z_fail = counts->ZFail_A == kQueryFinished || counts->ZFail_B == kQueryFinished;
+    const bool end = end_via_z_pass || end_via_z_fail;
     // What the game left there, for the first queries and every traced frame (Gears of War 2 culled its whole world:
     // whether its occlusion queries come back visible is the first thing to know).
     if (queries_logged_ < 48 || draw_tracing_) {
@@ -2051,16 +2074,74 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       const uint32_t* w = reinterpret_cast<const uint32_t*>(counts);
       REXLOG_INFO("[query] ZPD at {:08X} ctl {:08X}: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} -> {}",
                   address, Register(rex::graphics::XE_GPU_REG_RB_SAMPLE_COUNT_CTL), w[0], w[1], w[2], w[3], w[4], w[5],
-                  w[6], w[7], end_via_z_pass || end_via_z_fail ? "end: visible" : "begin: zeroed");
+                  w[6], w[7], end ? "end" : "begin: zeroed");
+    }
+    const uint32_t query = address & ~0x3Fu;
+    // A query issued again: whatever was still waited for at that structure is not written over it any more.
+    std::erase_if(pending_queries_, [&](const PendingQuery& q) { return (q.address & ~0x3Fu) == query; });
+    const bool real = REXCVAR_GET(gow2_oclusion_real) && destinos_;
+    if (real && !end) {
+      std::memset(counts, 0, sizeof(*counts));
+      destinos_->EmpezarOclusion(query);
+      return;
+    }
+    if (real) {
+      if (const uint64_t ticket = destinos_->TerminarOclusionAsincrona(query)) {
+        pending_queries_.push_back({address, ticket, std::chrono::steady_clock::now()});
+        return;  // the mark stays: GetData waits
+      }
     }
     std::memset(counts, 0, sizeof(*counts));
     // The test option: without D3D's end marker, every second ZPD is taken as a query's end (begin and end come in
     // pairs), so a query is visible even if the marker never shows up where we look.
     const bool end_by_pair = REXCVAR_GET(gow2_consultas_siempre_visibles) && (zpd_count_++ & 1);
-    if (end_via_z_pass || end_via_z_fail || end_by_pair) {
+    if (end || end_by_pair) {
       counts->ZPass_A = kFakeSampleCount;
       counts->Total_A = kFakeSampleCount;
     }
+  }
+
+  // The real queries' counts back to the game, in order; one waited for too long is answered visible.
+  void OcclusionPoll() {
+    if (pending_queries_.empty()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto limit = std::chrono::milliseconds(std::max(REXCVAR_GET(gow2_oclusion_espera_ms), 0));
+    // The ring has been quiet for a while with a query waited for: the game may be waiting for one whose work is still
+    // being recorded (it would never be submitted).
+    if (destinos_ && now - pending_queries_.front().ended >= std::chrono::milliseconds(1) &&
+        now - ring_activity_ >= std::chrono::milliseconds(1)) {
+      destinos_->EnviarOclusiones();
+    }
+    size_t done = 0;
+    for (; done < pending_queries_.size(); ++done) {
+      const PendingQuery& q = pending_queries_[done];
+      uint64_t samples = 0;
+      const bool counted = destinos_ && destinos_->ResultadoOclusion(q.ticket, samples);
+      if (!counted && now - q.ended < limit) {
+        break;  // the later ones are in later work
+      }
+      auto* counts = memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(q.address);
+      const uint32_t n = counted ? uint32_t(std::min<uint64_t>(samples, INT32_MAX)) : uint32_t(kFakeSampleCount);
+      counts->Total_A = n;
+      counts->Total_B = 0;
+      counts->ZFail_A = 0;
+      counts->ZFail_B = 0;
+      counts->StencilFail_A = 0;
+      counts->StencilFail_B = 0;
+      counts->ZPass_B = 0;
+      std::atomic_thread_fence(std::memory_order_release);
+      counts->ZPass_A = n;  // the mark goes last
+      if (!counted) {
+        ++queries_timed_out_;
+      } else {
+        ++queries_answered_;
+        if (n == 0) ++queries_hidden_;
+        queries_wait_us_ += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - q.ended).count());
+      }
+    }
+    pending_queries_.erase(pending_queries_.begin(), pending_queries_.begin() + done);
   }
 
   rex::ui::WindowedAppContext* app_context_ = nullptr;
@@ -2117,6 +2198,14 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t packet_trace_n_ = 0;     // [pm4] lines of the traced frame
   uint32_t queries_logged_ = 0;     // [query] lines
   uint64_t zpd_count_ = 0;          // gow2_consultas_siempre_visibles
+  struct PendingQuery {
+    uint32_t address;  // the end structure, still marked
+    uint64_t ticket;
+    std::chrono::steady_clock::time_point ended;
+  };
+  std::deque<PendingQuery> pending_queries_;
+  std::chrono::steady_clock::time_point ring_activity_;  // the ring thread's last batch of packets  // real occlusion queries the GPU has not counted yet, oldest first
+  uint64_t queries_answered_ = 0, queries_hidden_ = 0, queries_timed_out_ = 0, queries_wait_us_ = 0;
   uint64_t rect_lists_ = 0;
   uint32_t rect_unexpanded_logged_ = 0;
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection

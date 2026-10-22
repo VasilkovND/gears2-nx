@@ -49,6 +49,9 @@ struct ShaderRecompiler : StringBuffer
     // A vertex fetch at a computed index (dsVfetch), and each element's position in the declaration by address.
     bool usaLecturaManual = false;
     std::unordered_map<uint32_t, uint32_t> elementOrdinal;
+    // Elements (by declaration position) fetched at r0.x after the shader rewrote r0.x: an index it computed, not
+    // the vertex's own. Read with dsVfetch too, and published to the runtime as spec constant 1 (g_ManualesR0).
+    uint32_t manualesR0 = 0;
     // Forward-only jumps as `if (pc <= N)` blocks instead of `while (true) switch (pc)` (recompile()). Turned on by
     // ds_hlsl --saltos-lineales (needed so uam can compile the jump-heavy shaders).
     bool saltosLineales = false;

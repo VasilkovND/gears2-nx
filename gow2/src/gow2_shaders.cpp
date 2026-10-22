@@ -156,6 +156,21 @@ const char* Leer(const ds::Shader& shader, EntradaShader& e) {
 
 // The samplers of a shader without a constant table: every texture of descriptor set 0 at bindings 0-15 (the
 // translator's sampler registers; 16-31 are the 2D pairs), typed by TiposDesdeSpirv afterwards.
+// The default value of spec constant 1 (g_ManualesR0, shaders/XenosRecomp): the vertex elements, by declaration
+// position, the shader fetches at an r0.x it rewrote itself (an index it computed); 0 when the shader has none.
+uint32_t ManualesR0DesdeSpirv(std::span<const uint32_t> spirv) {
+  if (spirv.size() < 5) return 0;
+  uint32_t id = UINT32_MAX;
+  for (size_t i = 5; i < spirv.size();) {
+    const uint32_t palabras = spirv[i] >> 16, op = spirv[i] & 0xFFFF;
+    if (!palabras || i + palabras > spirv.size()) break;
+    if (op == 71 && palabras >= 4 && spirv[i + 2] == 1 && spirv[i + 3] == 1) id = spirv[i + 1];  // OpDecorate SpecId 1
+    if (op == 50 && palabras >= 4 && spirv[i + 2] == id) return spirv[i + 3];                      // OpSpecConstant
+    i += palabras;
+  }
+  return 0;
+}
+
 void SamplersDesdeSpirv(std::span<const uint32_t> spirv, std::vector<SamplerShader>& samplers) {
   if (spirv.size() < 5 || spirv[0] != 0x07230203u) return;
   std::unordered_map<uint32_t, uint32_t> binding, conjunto;
@@ -298,6 +313,15 @@ bool Biblioteca::Cargar(const std::filesystem::path& archivo) {
     }
     if (e.samplers.empty() && shaders[i].original.size() >= 20 && Contenedor{shaders[i].original}.U32(16) == 0) {
       SamplersDesdeSpirv(e.spirv, e.samplers);
+    }
+    // Elements fetched at an r0.x the shader rewrote (an index it computed, though the register is r0.x): read by the
+    // shader itself like those at other registers (the translator says which, spec constant 1).
+    if (e.vertices) {
+      if (const uint32_t manuales = ManualesR0DesdeSpirv(e.spirv)) {
+        for (size_t k = 0; k < e.elementos.size() && k < 32; ++k) {
+          if (manuales & (1u << k)) e.elementos[k].manual = true;
+        }
+      }
     }
     TiposDesdeSpirv(e.spirv, e.samplers);
     if (!e.vertices) {
