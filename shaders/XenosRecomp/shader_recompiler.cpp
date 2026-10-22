@@ -99,6 +99,10 @@ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
     { DeclUsage::TexCoord, 6, 14 },
     { DeclUsage::TexCoord, 7, 15 },
     { DeclUsage::Position, 1, 15 },
+    // Above the first 16 (deko3d has 32 vertex attributes): Gears of War 2 has one vertex shader with POSITION0-3.
+    // The renderer's UbicacionDeUso (sdk include/rex/x360/xenos.h) maps the same.
+    { DeclUsage::Position, 2, 16 },
+    { DeclUsage::Position, 3, 17 },
 };
 
 static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =

@@ -1276,6 +1276,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       request.registros = alias.Apply(msaa);
       ++generacion_encuadre_;  // the scaled viewport and scissor are not the mirror's
     }
+    const bool rect_list = ExpandRectList(alias);
+    if (rect_list) ++generacion_fetch_;  // the fetch constant points at our quads
     request.vs = vs_;
     request.ps = ps_;
     request.vs_microcodigo = vs_microcode_;
@@ -1291,7 +1293,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       ++generacion_encuadre_;  // back to the mirror's for the next draw
       ++msaa_draws_;
     }
+    if (rect_list) ++generacion_fetch_;  // back to the game's fetch constant
   }
+
 
   // The register mirror with a multisampled surface turned into the 1x surface it aliases: 4X doubles width and
   // height (pitch x2), 2X doubles the height (samples stacked vertically). Viewport and scissors scale the same way.
@@ -1308,7 +1312,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 
    private:
     RingGraphicsSystem& system_;
-    std::pair<uint32_t, uint32_t> saved_[12];
+    std::pair<uint32_t, uint32_t> saved_[16];
     uint32_t count_ = 0;
   };
 
@@ -1346,6 +1350,107 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     scale_xy(g::XE_GPU_REG_PA_SC_SCREEN_SCISSOR_TL, 15);
     scale_xy(g::XE_GPU_REG_PA_SC_SCREEN_SCISSOR_BR, 15);
     return r;
+  }
+
+  // Rectangle lists (primitive type 8): Unreal Engine 3 draws its full-screen passes (post-processing, the final copy
+  // to the back buffer, UI quads) as rectangles of three vertices, the fourth implied, which deko3d has no primitive
+  // for. Each rectangle becomes a quad (deko3d draws quad lists natively): the corner is the vertex opposite the
+  // longest edge (by POSITION0's x and y), the missing vertex is a + b - corner for every component (a rectangle's
+  // attributes are affine across it), written to a guest buffer of ours that the fetch constant points at for this
+  // draw. Only what such quads use: auto-indexed draws, one vertex stream, 32-bit float elements, in k8in32 or no
+  // swap. The registers are restored with the alias scope.
+  bool ExpandRectList(AliasScope& scope) {
+    namespace g = rex::graphics;
+    const uint32_t init = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+    if ((init & 0x3F) != 8 || ((init >> 6) & 0x3) != 2 || !vs_) return false;  // rect list, auto index
+    const uint32_t count = init >> 16;
+    if (!count || count % 3 || count > 3 * 4096) return Unexpanded("vertex count");
+    int32_t slot = -1;
+    uint32_t stride = 0, position = UINT32_MAX;
+    for (const rex::x360::ElementoVertice& el : vs_->elementos) {
+      const size_t i = size_t(el.instruccion) * 3;
+      if (i + 2 >= vs_microcode_.size()) return Unexpanded("fetch outside the microcode");
+      const uint32_t w0 = vs_microcode_[i], w1 = vs_microcode_[i + 1], w2 = vs_microcode_[i + 2];
+      const int32_t s = int32_t(((w0 >> 20) & 0x1F) * 3 + ((w0 >> 25) & 0x3));
+      if (slot >= 0 && s != slot) return Unexpanded("more than one stream");
+      slot = s;
+      const uint32_t format = (w1 >> 16) & 0x3F;
+      if (format != 36 && format != 37 && format != 57 && format != 38) return Unexpanded("not a float format");
+      if (stride && (w2 & 0xFF) != stride) return Unexpanded("strides differ");
+      stride = w2 & 0xFF;
+      if (el.uso == 0 && el.indice_uso == 0) position = (w2 >> 8) & 0x7FFFFF;
+    }
+    if (slot < 0 || !stride || position == UINT32_MAX || position + 2 > stride) return Unexpanded("no position");
+    const uint32_t reg = 0x4800 + uint32_t(slot) * 2;
+    const uint32_t f0 = registers_[reg], f1 = registers_[reg + 1];
+    const uint32_t endian = f1 & 0x3;
+    if ((f0 & 0x3) != 3 || (endian != 0 && endian != 2)) return Unexpanded("fetch constant");
+    const uint32_t first = Register(g::XE_GPU_REG_VGT_INDX_OFFSET) & 0xFFFFFF;
+    const uint32_t available = (f1 >> 2) & 0xFFFFFF;  // words
+    if (uint64_t(first + count) * stride > available) return Unexpanded("past the buffer");
+    const uint32_t* src = memory_->TranslatePhysical<const uint32_t*>((f0 & 0x1FFFFFFC) + first * stride * 4);
+    const uint32_t rects = count / 3;
+    const uint32_t words = rects * 4 * stride;
+    if (words * 4 > rect_buffer_size_) {
+      if (rect_buffer_) memory_->SystemHeapFree(rect_buffer_);
+      rect_buffer_size_ = std::max<uint32_t>(words * 4, 4096);
+      rect_buffer_ = memory_->SystemHeapAlloc(rect_buffer_size_, 256, rex::memory::kSystemHeapPhysical);
+      if (!rect_buffer_) {
+        rect_buffer_size_ = 0;
+        return Unexpanded("no guest memory");
+      }
+    }
+    uint32_t* dst = memory_->TranslateVirtual<uint32_t*>(rect_buffer_);
+    auto load = [&](uint32_t w) {
+      float f;
+      const uint32_t v = endian ? __builtin_bswap32(w) : w;
+      std::memcpy(&f, &v, 4);
+      return f;
+    };
+    auto store = [&](float f) {
+      uint32_t v;
+      std::memcpy(&v, &f, 4);
+      return endian ? __builtin_bswap32(v) : v;
+    };
+    for (uint32_t r = 0; r < rects; ++r) {
+      const uint32_t* v[3] = {src + (r * 3) * stride, src + (r * 3 + 1) * stride, src + (r * 3 + 2) * stride};
+      auto edge = [&](int a, int b) {
+        const float dx = load(v[a][position]) - load(v[b][position]);
+        const float dy = load(v[a][position + 1]) - load(v[b][position + 1]);
+        return dx * dx + dy * dy;
+      };
+      const float e12 = edge(1, 2), e20 = edge(2, 0), e01 = edge(0, 1);
+      const int c = e12 >= e20 && e12 >= e01 ? 0 : (e20 >= e01 ? 1 : 2);  // opposite the longest edge
+      const uint32_t* corner = v[c];
+      const uint32_t* a = v[(c + 1) % 3];
+      const uint32_t* b = v[(c + 2) % 3];
+      uint32_t* q = dst + r * 4 * stride;
+      std::memcpy(q, corner, stride * 4);
+      std::memcpy(q + stride, a, stride * 4);
+      for (uint32_t w = 0; w < stride; ++w) q[2 * stride + w] = store(load(a[w]) + load(b[w]) - load(corner[w]));
+      std::memcpy(q + 3 * stride, b, stride * 4);
+    }
+    scope.Save(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+    scope.Save(g::XE_GPU_REG_VGT_INDX_OFFSET);
+    scope.Save(reg);
+    scope.Save(reg + 1);
+    registers_[g::XE_GPU_REG_VGT_DRAW_INITIATOR] = (init & 0xFFC0) | 13 | ((rects * 4) << 16);  // quad list
+    registers_[g::XE_GPU_REG_VGT_INDX_OFFSET] = 0;
+    registers_[reg] = (memory_->GetPhysicalAddress(rect_buffer_) & 0x1FFFFFFC) | (f0 & 0x3);
+    registers_[reg + 1] = (f1 & ~uint32_t(0x03FFFFFC)) | ((words & 0xFFFFFF) << 2);
+    if (rect_lists_++ < 4) {
+      REXLOG_INFO("[gpu] rect list as quads: {} rectangle(s), stride {} words, position at {} (VS n{})", rects, stride,
+                  position, vs_->numero);
+    }
+    return true;
+  }
+
+  bool Unexpanded(const char* why) {
+    if (rect_unexpanded_logged_ < 8) {
+      ++rect_unexpanded_logged_;
+      REXLOG_WARN("[gpu] rect list not expanded ({}): VS n{}", why, vs_ ? int(vs_->numero) : -1);
+    }
+    return false;
   }
 
   // A Direct3D clear draw, as the renderer's clears. Direct3D's fast clear binds c0 (the color to clear) and, for the
@@ -1839,6 +1944,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::unordered_set<uint64_t> resolve_seen_;  // ResolveCatalog
   std::unordered_set<std::string> clear_shapes_;  // EmulateClear
   uint32_t clear_rect_ = 0;          // guest buffer with the emulated clears' rectangle
+  uint32_t rect_buffer_ = 0;         // guest buffer with the rectangle lists made quads (ExpandRectList)
+  uint32_t rect_buffer_size_ = 0;
+  uint64_t rect_lists_ = 0;
+  uint32_t rect_unexpanded_logged_ = 0;
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection
   uint32_t auto_captures_ = 0, auto_dumps_ = 0;
   uint64_t depth_greater_ = 0, depth_less_ = 0, clears_ = 0, clears_logged_ = 0, msaa_draws_ = 0;

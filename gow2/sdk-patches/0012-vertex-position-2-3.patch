@@ -1,0 +1,37 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 10:16:21
++++ b/include/rex/x360/deko/render.h	2026-10-22 10:16:21
+@@ -120,7 +120,7 @@
+ // The vertex input of a vertex shader with the fetches D3D patched into it (the Vulkan backend's EntradaVertices,
+ // as deko3d state).
+ struct EntradaVerticesDk {
+-  std::array<DkVtxAttribState, 16> atributos{};  // by input location; the ones not given are fixed (0)
++  std::array<DkVtxAttribState, 32> atributos{};  // by input location; the ones not given are fixed (0)
+   uint32_t n_atributos = 0;                      // up to the last location used, plus one
+   struct Enlace {
+     uint32_t ranura = 0;   // vertex fetch constant (0-95)
+diff -ru a/include/rex/x360/xenos.h b/include/rex/x360/xenos.h
+--- a/include/rex/x360/xenos.h	2026-10-22 10:16:21
++++ b/include/rex/x360/xenos.h	2026-10-22 10:16:21
+@@ -301,7 +301,8 @@
+ inline int32_t UbicacionDeUso(uint8_t uso, uint8_t indice) {
+   switch (uso) {
+     case 0:  // posicion
+-      return indice == 0 ? 0 : (indice == 1 ? 15 : -1);
++      // 2 and 3 above the 16 of the other usages (Gears of War 2: one vertex shader reads POSITION0-3).
++      return indice == 0 ? 0 : (indice == 1 ? 15 : (indice == 2 ? 16 : (indice == 3 ? 17 : -1)));
+     case 3:  // normal
+       return indice == 0 ? 1 : -1;
+     case 6:  // tangente
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 10:16:21
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 10:16:21
+@@ -539,7 +539,7 @@
+       continue;
+     }
+     const int32_t ubicacion = UbicacionDeUso(elemento.uso, elemento.indice_uso);
+-    if (ubicacion < 0 || ubicacion >= 16 || ((ubicaciones_usadas >> ubicacion) & 0x1)) {
++    if (ubicacion < 0 || ubicacion >= 32 || ((ubicaciones_usadas >> ubicacion) & 0x1)) {
+       Avisar(22, "elemento de vertices sin ubicacion libre en el shader: se omite");
+       continue;
+     }

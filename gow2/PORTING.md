@@ -48,12 +48,25 @@ selection bar. From the log:
   maps them to half floats.
 - 7 shaders created at run time (not in any package) were dumped by the create hooks: `gow2/out/console_dumps/`.
 
+### Run 2 (2026-10-22)
+
+The menus and UI draw; the 3D scene does not. DKSH cache loads in 3.6 s (was 26). 363,213 of 607,055 draws in 10 s
+were still skipped for an unknown VS, from five distinct microcodes (`shaders_unknown/`):
+
+- One is the scene's main vertex shader (81 words, drawing into the scene target): the shader that reads
+  POSITION0-3 and was left out of the library. POSITION2/3 now have locations 16/17 (translator `USAGE_LOCATIONS`,
+  SDK patch 0012: `UbicacionDeUso`, 32 attribute slots).
+- Four (VS of 15, 24, 27 words and a 9-word PS, loaded with IM_LOAD_IMMEDIATE at address 0) match nothing in the
+  packages: Direct3D's own internal shaders (clears); emulated as clears where they have that shape.
+- Rectangle lists (primitive 8) were rejected by the renderer: UE3 draws its full-screen passes with them. The ring
+  reader now turns each three-vertex rectangle into a quad (fourth vertex = a + b - corner, the corner opposite the
+  longest edge) in a guest buffer of its own (`ExpandRectList`), for one float stream; deko3d draws quad lists.
+
 ### Open
 
 - Two packages do not expand offline (`SP_Hospital_03`, `SP_Sinkhole_W`: an LZX error in one block; window and frame
   padding ruled out). The game itself reads them with its own XMemDecompress, so this only means their shaders are
   dumped on the console by the create hooks instead (`shaders_dump/`).
-- One vertex shader reads POSITION2/3, which have no attribute location (`USAGE_LOCATIONS`): left out.
 - 28 vertex shaders index more than 16 manual vertex fetch descriptors (uam: "array index must be < 16").
 - The full set (all maps) would be ~470 MB of library: later, per-chapter sets or loading on demand.
 
