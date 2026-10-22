@@ -1,0 +1,17 @@
+diff -ru a/src/ui/deko3d/glsl.cpp b/src/ui/deko3d/glsl.cpp
+--- a/src/ui/deko3d/glsl.cpp	2026-10-22 17:57:09
++++ b/src/ui/deko3d/glsl.cpp	2026-10-22 17:57:09
+@@ -262,10 +262,11 @@
+ 
+     // The value is the default of SPIRV_CROSS_CONSTANT_ID_0 in the GLSL, so the text says which variant it is;
+     // Mesa's front end folds the branches that depend on it.
++    // Other constants keep the value the translator wrote (Gears of War 2's g_ManualesR0, id 1: which vertex elements
++    // the shader fetches itself, read by the loader from the SPIR-V).
+     for (const spirv_cross::SpecializationConstant& c : compilador.get_specialization_constants()) {
+       if (c.constant_id != 0) {
+-        r.error = "constante de especializacion inesperada: " + std::to_string(c.constant_id);
+-        return r;
++        continue;
+       }
+       compilador.get_constant(c.id).m.c[0].r[0].u32 = especializacion;
+     }
