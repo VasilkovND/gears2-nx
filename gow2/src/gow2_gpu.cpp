@@ -163,11 +163,11 @@ REXCVAR_DEFINE_BOOL(gow2_busqueda_directa, true, "Gears2",
 REXCVAR_DEFINE_BOOL(gow2_saltar_vs_rotos, true, "Gears2",
                     "No dibujar los vertex shaders que rompen la geometria (nivel 2: el VS 38234053372F8F2F, con "
                     "matrices elegidas por indice, dibuja triangulos gigantes sobre toda la pantalla)");
-REXCVAR_DEFINE_INT32(gow2_arboles, 0, "Gears2",
+REXCVAR_DEFINE_INT32(gow2_arboles, 1, "Gears2",
                      "Los arboles del nivel 2 (VS 38234053372F8F2F): 0 = no se dibujan (gow2_saltar_vs_rotos), 1 = tal cual, "
                      "2 = con las matrices de balanceo (c11-c22) cambiadas por la identidad, 3 = identidad y c10 = 0, "
                      "4 = solo c10 = 0");
-REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, true, "Gears2",
+REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, false, "Gears2",
                     "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");

@@ -1,0 +1,20 @@
+diff -ru a/include/rex/x360/xenos.h b/include/rex/x360/xenos.h
+--- a/include/rex/x360/xenos.h	2026-10-22 21:51:12
++++ b/include/rex/x360/xenos.h	2026-10-22 21:51:12
+@@ -324,10 +324,12 @@
+ 
+ // USAGE_TYPES: these inputs are uint4 in the translated shaders.
+ inline bool EntradaEntera(uint8_t uso) {
+-  // Only BLENDINDICES. Since the nfsmw_validado_normales library, normals, tangents and binormals are
+-  // float4: NFSMW stores them as 16-bit integers (format 26) or as floats, and with uint4 the shader's
+-  // asfloat gave degenerate directions (seen in the rear-view mirror).
+-  return uso == 2;
++  // None any more: Xenos vertex fetches always give floats (an integer format with num_format int gives integer
++  // values as floats). BLENDINDICES used to be uint4, and Gears of War 2's trees store theirs as float4 (format 38):
++  // the shader got the raw float bits (1.0 -> 1065353216), its matrix index left the constants and the trees came out
++  // as giant planes. XenosRecomp declares them float4 now and integer formats bind as Uscaled/Sscaled.
++  (void)uso;
++  return false;
+ }
+ 
+ inline uint32_t ComponentesVertice(uint32_t formato) {
