@@ -1,0 +1,24 @@
+diff -ru a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+--- a/src/system/xmemory.cpp	2026-10-22 12:19:36
++++ b/src/system/xmemory.cpp	2026-10-22 12:19:45
+@@ -580,6 +580,20 @@
+                    "r12 {:08X} r13 {:08X} r31 {:08X}",
+                    c->r1.u32, uint32_t(c->lr), c->ctr.u32, c->r3.u32, c->r4.u32, c->r5.u32, c->r6.u32, c->r11.u32,
+                    c->r12.u32, c->r13.u32, c->r31.u32);
++      // The guest call chain: each frame's back chain is at 0(r1), and the caller's saved LR 8 bytes below the
++      // previous frame's top (the 360's prologue: stw r12,-8(r1) before stwu). Stops at the first unmapped frame.
++      std::string chain;
++      uint32_t sp = c->r1.u32;
++      for (int i = 0; i < 48 && sp; ++i) {
++        auto* sp_heap = LookupHeap(sp);
++        if (!sp_heap) break;
++        const uint32_t prev = rex::memory::load_and_swap<uint32_t>(TranslateVirtual(sp));
++        if (prev <= sp || !LookupHeap(prev - 8)) break;
++        const uint32_t saved_lr = rex::memory::load_and_swap<uint32_t>(TranslateVirtual(prev - 8));
++        chain += fmt::format(" {:08X}", saved_lr);
++        sp = prev;
++      }
++      REXSYS_ERROR("  guest call chain (saved LRs):{}", chain);
+     }
+     return false;
+   }
