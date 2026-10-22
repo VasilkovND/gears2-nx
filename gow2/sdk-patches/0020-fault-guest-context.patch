@@ -1,0 +1,27 @@
+diff -ru a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+--- a/src/system/xmemory.cpp	2026-10-22 12:02:31
++++ b/src/system/xmemory.cpp	2026-10-22 12:02:31
+@@ -27,6 +27,7 @@
+ #include <rex/stream.h>
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/mmio_handler.h>
++#include <rex/system/thread_state.h>
+ #include <rex/system/xmemory.h>
+ #include <rex/thread.h>
+ 
+@@ -571,6 +572,15 @@
+         "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+         is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+         rex::thread::current_thread_id());
++    // The guest registers at the fault (the context the recompiled code keeps in memory): which guest function, from
++    // where, with which stack.
++    if (auto* ts = runtime::ThreadState::Get()) {
++      const PPCContext* c = ts->context();
++      REXSYS_ERROR("  guest context: r1 {:08X} lr {:08X} ctr {:08X} r3 {:08X} r4 {:08X} r5 {:08X} r6 {:08X} r11 {:08X} "
++                   "r12 {:08X} r13 {:08X} r31 {:08X}",
++                   c->r1.u32, uint32_t(c->lr), c->ctr.u32, c->r3.u32, c->r4.u32, c->r5.u32, c->r6.u32, c->r11.u32,
++                   c->r12.u32, c->r13.u32, c->r31.u32);
++    }
+     return false;
+   }
+ 
