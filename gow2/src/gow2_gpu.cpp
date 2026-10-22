@@ -1435,7 +1435,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // Also onto a k_16_16 target (fixed point, -32..32): Gears of War 2 clears its motion blur velocity buffer (EDRAM
     // 658, 640x360) that way before writing the moving objects' velocities with MAX blending. Never cleared, it kept
     // the largest velocity ever written, and the hero riding a vehicle stayed smeared though he does not move.
-    const uint32_t clear_format = (Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF;
+    const uint32_t clear_format = (Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF;  // (its color: EmulateClear)
     bool rect_clear = !msaa && (initiator & 0x3F) == 8 && (initiator >> 16) == 3 &&
                       Register(g::XE_GPU_REG_RB_COLOR_MASK) == 0xFFFF && (clear_format <= 1 || clear_format == 4);
     for (uint32_t j = 0; j < 4 && rect_clear; ++j) {
@@ -1818,6 +1818,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // so the depth it writes (z of the first vertex, through the viewport) is the color the target gets. Read before
     // fetch constant 0 is replaced with the renderer's own rectangle below.
     float game_z = 0.0f;
+    float game_color[4] = {};
     bool game_vertices = false;
     if ((base.fetch_vertices[0] & 0x3) == uint32_t(xenos::FetchConstantType::kVertex) &&
         ((base.fetch_vertices[1] >> 2) & 0xFFFFFF) >= 7) {
@@ -1826,6 +1827,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       float z;
       std::memcpy(&z, v + 2 * 4, 4);
       z = xenos::GpuSwap(z, endian);
+      for (uint32_t j = 0; j < 4; ++j) {  // COLOR, after POSITION
+        std::memcpy(&game_color[j], v + (3 + j) * 4, 4);
+        game_color[j] = xenos::GpuSwap(game_color[j], endian);
+      }
       float zs, zo;
       std::memcpy(&zs, &r[g::XE_GPU_REG_PA_CL_VPORT_ZSCALE], 4);
       std::memcpy(&zo, &r[g::XE_GPU_REG_PA_CL_VPORT_ZOFFSET], 4);
@@ -1900,14 +1905,14 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         color |= uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)) << (j * 8);
       }
     }
-    // A k_16_16 target: c0's x and y as its EDRAM bits (16-bit fixed point, value / 32 * 32767), passed as such
-    // (bit 31 of RB_COPY_CONTROL, SDK patch 0040).
+    // A k_16_16 target: the clear rectangle's vertex color (its pixel shader's c0 holds 8, not the color: as the color,
+    // the velocity buffer was filled with "a moving object everywhere" and the whole screen smeared) as the target's
+    // EDRAM bits (16-bit fixed point, value / 32 * 32767), passed as such (bit 31 of RB_COPY_CONTROL, SDK patch 0040).
     bool color_as_bits = false;
     if (!msaa && ((base.rb_color_info[0] >> 16) & 0xF) == 4) {
       color = 0;
       for (uint32_t j = 0; j < 2; ++j) {
-        float v;
-        std::memcpy(&v, &registers_[0x4400 + j], 4);
+        const float v = game_vertices && std::isfinite(game_color[j]) ? game_color[j] : 0.0f;
         const int32_t q = int32_t(std::lround(std::clamp(v / 32.0f, -1.0f, 1.0f) * 32767.0f));
         color |= uint32_t(uint16_t(int16_t(q))) << (j * 16);
       }

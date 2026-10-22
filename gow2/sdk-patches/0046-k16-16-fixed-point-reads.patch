@@ -34,18 +34,19 @@ diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
  constexpr const char* kFsCopiaProfundidad = R"(#version 460
 diff -ru a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
 --- a/src/x360/deko/texturas.cpp	2026-10-22 21:35:30
-+++ b/src/x360/deko/texturas.cpp	2026-10-22 21:35:36
-@@ -22,6 +22,9 @@
++++ b/src/x360/deko/texturas.cpp	2026-10-22 22:32:16
+@@ -22,6 +22,10 @@
  #include <rex/x360/deko/render.h>
  #include <rex/x360/xenos.h>
  
-+REXCVAR_DEFINE_BOOL(nfsmw_dk_16_16_fijo, true, "NFSMW",
-+                    "deko3d: un destino k_16_16 (coma fija, -32..32) leido como textura k_16_16 da lo que da el hardware "
-+                    "(los bits como entero normalizado, o el valor / 32 con signo) y no el valor tal cual");
++REXCVAR_DEFINE_BOOL(nfsmw_dk_16_16_fijo, false, "NFSMW",
++                    "deko3d: un destino k_16_16 (coma fija, -32..32) leido como textura k_16_16 da los bits como entero "
++                    "normalizado (o el valor / 32 con signo) en vez del valor tal cual. Apagado: Gears of War 2 lee su "
++                    "buffer de velocidades esperando el valor escrito (0..1, lo decodifica con 2v - 1)");
  REXCVAR_DEFINE_BOOL(nfsmw_nativo_mipmaps, true, "NFSMW",
                      "Renderizador nativo: sube los niveles de mip que trae el juego (como en la Xbox 360). false: solo "
                      "el nivel base, como antes de la build 136")
-@@ -307,6 +310,38 @@
+@@ -307,6 +311,38 @@
    return &c.imagen;
  }
  
@@ -84,7 +85,7 @@ diff -ru a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
  const ImagenDk* RenderDk::ResueltaRecortada(const ImagenDk& resuelta, uint32_t ancho, uint32_t alto) {
    if (recortadas_.size() > 64) {  // resolves recreated at other sizes leave theirs behind
      for (auto& [clave, c] : recortadas_) {
-@@ -565,6 +600,13 @@
+@@ -565,6 +601,13 @@
        // The emulation's copy swaps channels in memory (copy_dest_swap) and the fetch swizzle undoes it; here the copy
        // is image to image, so the swap goes into the host channels.
        const uint16_t host = resuelta->intercambio_rb ? kSwizzleBGRA : kSwizzleRGBA;
