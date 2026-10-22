@@ -24,7 +24,7 @@ static constexpr const char* USAGE_TYPES[] =
 {
     "float4", // POSITION
     "float4", // BLENDWEIGHT
-    "float4", // BLENDINDICES: Xenos fetches give floats (Gears of War 2's trees store them as float4)
+    "uint4", // BLENDINDICES
     "float4", // NORMAL: the game stores them as 16-bit integers or as float
     "float4", // PSIZE
     "float4", // TEXCOORD

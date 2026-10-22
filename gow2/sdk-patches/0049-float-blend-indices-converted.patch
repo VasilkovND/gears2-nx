@@ -1,0 +1,66 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 21:58:04
++++ b/include/rex/x360/deko/render.h	2026-10-22 21:58:04
+@@ -150,6 +150,14 @@
+   };
+   std::vector<Manual> manuales;
+   std::vector<uint32_t> ranuras_manuales;  // storage buffer b reads vertex fetch constant ranuras_manuales[b]
++  // Integer inputs (BLENDINDICES, uint4 in the shaders) fetched from a 32-bit float format: Xenos fetches give floats,
++  // the host attribute cannot convert one into an integer, so the copy of that stream gets those words as integers
++  // (1.0 -> 1). Gears of War 2's trees store their blend indices as float4: read as raw bits (1.0 -> 1065353216) the
++  // matrix index left the constants and the trees came out as giant planes.
++  struct AEntero {
++    uint32_t enlace = 0, offset = 0, n = 0;
++  };
++  std::vector<AEntero> a_entero;
+ };
+ 
+ class RenderDk final : public DestinosNativos {
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 21:58:04
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 21:58:04
+@@ -592,6 +592,10 @@
+     a.offset = uint32_t(offset);
+     a.size = tamano;
+     a.type = tipo;
++    if (EntradaEntera(elemento.uso) && (formato == 36 || formato == 37 || formato == 38 || formato == 57)) {
++      entrada.a_entero.push_back(
++          {enlace, uint32_t(offset), formato == 36 ? 1u : formato == 37 ? 2u : formato == 57 ? 3u : 4u});
++    }
+     entrada.n_atributos = std::max(entrada.n_atributos, uint32_t(ubicacion) + 1);
+     entrada.remapeos[uint32_t(ubicacion)] = CodigoRemapeo(original, d1 & 0xFFF);
+     entrada.lista.push_back({uint32_t(ubicacion), enlace, uint32_t(offset)});
+@@ -1868,6 +1872,33 @@
+   std::array<DkBufExtents, 16> bufers{};
+   for (size_t b = 0; b < entrada->enlaces.size(); ++b) {
+     const Origen& origen = origenes[b];
++    // A stream with float words for an integer input (EntradaVerticesDk::a_entero): its own converted copy.
++    bool a_entero = false;
++    for (const EntradaVerticesDk::AEntero& c : entrada->a_entero) a_entero |= c.enlace == b;
++    if (a_entero) {
++      const deko::Subida s = nucleo_.Reservar(origen.bytes, 16);
++      if (!s) {
++        return Rechazar(13, "sin sitio en el anillo de subida");
++      }
++      CopiarVertices(TrabajoCopia{origen.datos, s.cpu, origen.bytes / 4, origen.orden});
++      const uint32_t zancada = entrada->enlaces[b].zancada;
++      const uint32_t n_vertices = zancada ? origen.bytes / zancada : 1;
++      for (const EntradaVerticesDk::AEntero& c : entrada->a_entero) {
++        if (c.enlace != b) continue;
++        for (uint32_t v = 0; v < n_vertices; ++v) {
++          for (uint32_t k = 0; k < c.n; ++k) {
++            const size_t at = size_t(v) * zancada + c.offset + k * 4;
++            if (at + 4 > origen.bytes) break;
++            float f;
++            std::memcpy(&f, static_cast<uint8_t*>(s.cpu) + at, 4);
++            const uint32_t u = f > 0.0f ? uint32_t(std::min(f, 4294967040.0f)) : 0u;
++            std::memcpy(static_cast<uint8_t*>(s.cpu) + at, &u, 4);
++          }
++        }
++      }
++      bufers[b] = {s.gpu, origen.bytes};
++      continue;
++    }
+     // Kept from an earlier frame with the same content (or kept now, the second time it is seen unchanged).
+     if (geometria_.activo()) {
+       const deko::AlmacenGeometria::Resultado en_almacen = geometria_.Buscar(
