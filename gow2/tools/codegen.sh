@@ -114,7 +114,10 @@ STAMP="$CG/inputs.sha"
 INPUTS=$( (cat "$CG/game/default.xex" "$CG/gow2_manifest.toml" "$CG"/hints/*.toml "$REXGLUE" \
   "$PC"/tools/patch_switch_traps.py "$PC"/tools/patch_game_patches.py "$PC"/tools/patch_memory_barriers.py \
   "$PC"/tools/patch_spin_hints.py "$ROOT"/gow2/tools/patch_leaf_prologue.py \
-  "$ROOT"/gow2/tools/patch_stack_access.py; echo "barriers=$BARRIERS") \
+  "$ROOT"/gow2/tools/patch_stack_access.py "$ROOT"/gow2/tools/patch_inline_calls.py; echo "barriers=$BARRIERS"
+  # The hooked functions (patch_inline_calls.py keeps their calls): a new hook regenerates the code.
+  grep -rhoE "(REX_HOOK_RAW|REX_HOOK|REX_STUB_LOG|REX_STUB|REX_FUNC)\( *sub_[0-9A-Fa-f]{8}" \
+    "$ROOT/gow2/src" "$ROOT/sdk/src" "$ROOT/sdk/include" | sort -u) \
   | shasum -a 256 | cut -d' ' -f1)
 if [ "$(cat "$STAMP" 2>/dev/null)" != "$INPUTS" ] || [ ! -f "$CG/generated/default/sources.cmake" ]; then
   # Generated and fixed in a staging folder, then only the files whose text changed are copied over generated/:
@@ -155,6 +158,10 @@ PY
   # And the guest stack's accesses without volatile (make_nx_pch.py, point 6).
   (cd "$ST" && python3 "$ROOT/gow2/tools/patch_stack_access.py" generated/default/*.cpp) > "$CG/patch_stack_access.log"
   tail -1 "$CG/patch_stack_access.log"
+  # And calls the compiler may inline: same-file functions no hook replaces, and the register save/restore helpers.
+  (cd "$ST" && python3 "$ROOT/gow2/tools/patch_inline_calls.py" "$ROOT/gow2/src" "$ROOT/sdk/src" "$ROOT/sdk/include" \
+    -- generated/default/gow2_recomp.*.cpp) > "$CG/patch_inline_calls.log"
+  tail -1 "$CG/patch_inline_calls.log" | cut -c1-160
   python3 - "$ST/generated/default" "$CG/generated/default" <<'PY'
 import filecmp, os, shutil, sys
 new, old = sys.argv[1:]

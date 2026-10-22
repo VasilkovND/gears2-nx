@@ -147,6 +147,10 @@ REXCVAR_DEFINE_INT32(gow2_oclusion_sin_esperar_ms, 8, "Gears2",
                      "Consultas de oclusion reales: cuando el juego se pone a esperar un resultado, las consultas "
                      "terminadas hace al menos estos milisegundos que la GPU aun no conto se contestan visibles al "
                      "momento (sin parar el fotograma). -1 = esperar hasta gow2_oclusion_espera_ms");
+REXCVAR_DEFINE_STRING(gow2_sonda, "700,650", "Gears2",
+                      "Sonda del fotograma tras la traza (ZL+ZR+Left): x,y de un cuadrado de 8x8 pixeles; cada dibujo "
+                      "del pase base se dibuja solo ahi y la GPU cuenta sus pixeles: el ultimo que pinta es el que se ve "
+                      "en ese punto (vacio = sin sonda)");
 REXCVAR_DEFINE_BOOL(gow2_busqueda_ps, true, "Gears2",
                     "Modos de busqueda (ZL+ZR+Right): cada pulsacion deja sin dibujar un pixel shader del pase base "
                     "(false: un vertex shader de los que escriben la profundidad de la escena)");
@@ -580,6 +584,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
       Report();
       OcclusionPoll();
+      ProbePoll();
       const uint32_t gen = ring_generation_.load(std::memory_order_acquire);
       if (gen != generation) {
         generation = gen;
@@ -1516,7 +1521,30 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     request.generacion_fetch = generacion_fetch_;
     request.generacion_encuadre = generacion_encuadre_;
     ++enviados_;
+    // The probe frame: a base-pass draw only into the probe square, its samples counted on the GPU.
+    const bool probe = probing_ && !msaa && ps_ && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 &&
+                       (Register(g::XE_GPU_REG_RB_COLOR_INFO) & 0xFFF) == 0x2D0 &&
+                       ((Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF) == 3 && probes_.size() < 3000;
+    uint32_t saved_tl = 0, saved_br = 0;
+    const uint32_t probe_key = 0xFFF00000u + uint32_t(probes_.size());
+    if (probe) {
+      saved_tl = registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL];
+      saved_br = registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR];
+      registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] = 0x80000000u | (probe_y_ << 16) | probe_x_;
+      registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR] = 0x80000000u | ((probe_y_ + 8) << 16) | (probe_x_ + 8);
+      ++generacion_encuadre_;
+      request.generacion_encuadre = generacion_encuadre_;
+      destinos_->EmpezarOclusion(probe_key);
+    }
     const bool drawn = destinos_->Dibujar(request);
+    if (probe) {
+      const uint64_t ticket = destinos_->TerminarOclusionAsincrona(probe_key);
+      registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] = saved_tl;
+      registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR] = saved_br;
+      ++generacion_encuadre_;
+      probes_.push_back({uint32_t(probes_.size()), vs_ ? vs_->numero : 0, ps_->numero,
+                         Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR) >> 16, ticket, UINT64_MAX});
+    }
     if (draw_tracing_) DrawTraceLine(drawn);
     if (msaa) {
       ++generacion_encuadre_;  // back to the mirror's for the next draw
@@ -2044,9 +2072,22 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       REXLOG_INFO("[frame] trace {} of a frame ({} draws in the previous one)", traces_done_ + 1, frame_.draws);
     }
     // Per-draw trace of a light frame (loading screens, menus: the interface), with telemetry.
+    if (probing_) {
+      probing_ = false;  // its draws' counts come back in ProbePoll
+      REXLOG_INFO("[probe] end of the probed frame: {} base-pass draws", probes_.size());
+    }
     if (draw_tracing_) {
       draw_tracing_ = false;
       REXLOG_INFO("[draws] end of the traced frame");
+      // The next frame: which base-pass draw paints the probe square (gow2_sonda).
+      unsigned px = 0, py = 0;
+      if (destinos_ && std::sscanf(REXCVAR_GET(gow2_sonda).c_str(), "%u,%u", &px, &py) == 2) {
+        probing_ = true;
+        probe_x_ = px;
+        probe_y_ = py;
+        probes_.clear();
+        probe_started_ = now;
+      }
     } else if (telemetry_ && draw_traces_ < 8 && frame_.draws >= 10 && frame_.draws <= 400 && now >= next_draw_trace_) {
       draw_tracing_ = true;
       ++draw_traces_;
@@ -2227,6 +2268,35 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
   }
 
+  // The probe frame's counts: once all are back (or 3 s passed), the draws that painted the probe square, in order;
+  // the last one is what shows there.
+  void ProbePoll() {
+    if (probes_.empty() || probing_) return;
+    bool all = true;
+    for (Probe& p : probes_) {
+      if (p.samples == UINT64_MAX && p.ticket) {
+        uint64_t n = 0;
+        if (destinos_->ResultadoOclusion(p.ticket, n)) p.samples = n; else all = false;
+      }
+    }
+    if (!all && std::chrono::steady_clock::now() - probe_started_ < std::chrono::seconds(3)) return;
+    std::string text;
+    const Probe* last = nullptr;
+    for (const Probe& p : probes_) {
+      if (p.samples != UINT64_MAX && p.samples > 0) {
+        text += fmt::format(" #{} vs{} ps{} n{} ({})", p.index, p.vs, p.ps, p.count, p.samples);
+        last = &p;
+      }
+    }
+    REXLOG_INFO("[probe] square {},{}: {} base-pass draws painted it:{}", probe_x_, probe_y_,
+                last ? "these" : "no", text);
+    if (last) {
+      REXLOG_INFO("[probe] the one that shows: #{} vs{} ps{} ({} vertices)", last->index, last->vs, last->ps,
+                  last->count);
+    }
+    probes_.clear();
+  }
+
   // The real queries' counts back to the game, in order; one waited for too long is answered visible.
   void OcclusionPoll() {
     if (pending_queries_.empty()) {
@@ -2358,6 +2428,14 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t skip_mode_ = 0, capture_after_skip_ = 0, skip_resume_ = 0;
   std::unordered_map<uint32_t, uint32_t> depth_vs_frame_, depth_vs_last_;  // search modes: VS number -> draws
   std::vector<uint32_t> search_vs_;  // the search modes' shader numbers (vertex or pixel, search_ps_)
+  struct Probe {
+    uint32_t index, vs, ps, count;
+    uint64_t ticket, samples;
+  };
+  bool probing_ = false;
+  uint32_t probe_x_ = 0, probe_y_ = 0;
+  std::vector<Probe> probes_;
+  std::chrono::steady_clock::time_point probe_started_;
   bool search_ps_ = false;
   uint32_t broken_vs_logged_ = 0;
   uint64_t skipped_broken_vs_ = 0;
