@@ -1,0 +1,21 @@
+diff -ru a/src/kernel/xboxkrnl/xboxkrnl_memory.cpp b/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
+--- a/src/kernel/xboxkrnl/xboxkrnl_memory.cpp	2026-10-22 12:07:02
++++ b/src/kernel/xboxkrnl/xboxkrnl_memory.cpp	2026-10-22 12:07:02
+@@ -172,7 +172,16 @@
+     heap->Alloc(adjusted_size, page_size, allocation_type, protect, top_down, &address);
+   }
+   if (!address) {
+-    // Failed - assume no memory available.
++    // Failed - assume no memory available. Logged (the first ones): Gears of War 2's allocator recursed until its stack
++    // ran out when this failed on the Switch, where every committed guest page is host memory.
++    static uint32_t logged = 0;
++    if (logged < 16) {
++      ++logged;
++      REXKRNL_WARN("NtAllocateVirtualMemory failed: base {:08X} size {:X} type {:X} protect {:X} page {:X}; heap {} of {} "
++                   "pages unreserved",
++                   adjusted_base, adjusted_size, uint32_t(alloc_type), uint32_t(protect_bits), page_size,
++                   heap ? heap->unreserved_page_count() : 0, heap ? heap->total_page_count() : 0);
++    }
+     return X_STATUS_NO_MEMORY;
+   }
+ 

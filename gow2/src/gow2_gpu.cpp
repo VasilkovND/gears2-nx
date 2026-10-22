@@ -26,6 +26,10 @@
 
 #include "gow2_gpu.h"
 
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -643,6 +647,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       dibujados = e.dibujados;
       rechazados = e.rechazados;
     }
+#if defined(__SWITCH__)
+    {
+      // The process's memory (title takeover gives ~3.2 GB): Gears of War 2 ran out of it loading its first level.
+      u64 used = 0, total = 0;
+      svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+      svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+      REXLOG_INFO("[mem] process memory: {} MB used of {} MB", used >> 20, total >> 20);
+    }
+#endif
     REXLOG_INFO("[gpu] draws: {} geometry, {} sent to the renderer: {} drawn, {} rejected by it; skipped here: "
                 "{} without VS, {} without PS (the renderer logs each rejection cause once)",
                 geometria_, enviados_, dibujados, rechazados, sin_vs_, sin_ps_);
