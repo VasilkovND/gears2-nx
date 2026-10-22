@@ -20,9 +20,14 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -37,18 +42,71 @@ REXCVAR_DEFINE_INT32(gow2_espera_gpu_us, 100, "Gears2",
                      "0 = girar como en la Xbox 360");
 
 namespace {
-void DormirEsperando() {
+// What the waits cost, per kind, and which call sites wait for the GPU most: logged every 10 s ([esperas]). In fights
+// Unreal's rendering thread spent half its time here and the game thread waited for it.
+enum Espera { kEsperaGpu, kEsperaConsulta, kEsperaAudio, kEsperas };
+std::atomic<uint64_t> g_esperas[kEsperas], g_esperas_ns[kEsperas];
+std::mutex g_sitios_mutex;
+std::unordered_map<uint32_t, uint64_t> g_sitios_ns;  // GPU waits: guest return address -> ns slept
+std::atomic<uint64_t> g_esperas_informe_ns{0};
+
+uint64_t AhoraNs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+}
+
+void InformeEsperas(uint64_t ahora) {
+  uint64_t antes = g_esperas_informe_ns.load(std::memory_order_relaxed);
+  if (ahora - antes < 10'000'000'000ull ||
+      !g_esperas_informe_ns.compare_exchange_strong(antes, ahora, std::memory_order_relaxed)) {
+    return;
+  }
+  std::vector<std::pair<uint32_t, uint64_t>> sitios;
+  {
+    std::lock_guard<std::mutex> lock(g_sitios_mutex);
+    sitios.assign(g_sitios_ns.begin(), g_sitios_ns.end());
+    g_sitios_ns.clear();
+  }
+  std::sort(sitios.begin(), sitios.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+  std::string texto;
+  for (size_t i = 0; i < sitios.size() && i < 4; ++i) {
+    texto += fmt::format(" {:08X} {:.0f} ms", sitios[i].first, double(sitios[i].second) / 1e6);
+  }
+  static constexpr const char* kNombres[kEsperas] = {"GPU", "consultas", "audio"};
+  std::string tipos;
+  for (int i = 0; i < kEsperas; ++i) {
+    tipos += fmt::format(" {} {} ({:.0f} ms)", kNombres[i], g_esperas[i].exchange(0),
+                         double(g_esperas_ns[i].exchange(0)) / 1e6);
+  }
+  REXLOG_INFO("[esperas] 10 s:{}; GPU por sitio:{}", tipos, texto);
+}
+
+void DormirEsperando(Espera tipo, uint32_t sitio = 0) {
 #if defined(__SWITCH__)
+  const uint64_t inicio = AhoraNs();
   const int32_t us = REXCVAR_GET(gow2_espera_gpu_us);
   svcSleepThread(us > 0 ? int64_t(us) * 1000 : 0);
+  const uint64_t fin = AhoraNs();
+  g_esperas[tipo].fetch_add(1, std::memory_order_relaxed);
+  g_esperas_ns[tipo].fetch_add(fin - inicio, std::memory_order_relaxed);
+  if (sitio) {
+    std::lock_guard<std::mutex> lock(g_sitios_mutex);
+    g_sitios_ns[sitio] += fin - inicio;
+  }
+  InformeEsperas(fin);
+#else
+  (void)tipo;
+  (void)sitio;
 #endif
 }
 }  // namespace
 
 REX_EXTERN(__imp__sub_82977688);
 REX_HOOK_RAW(sub_82977688) {
+  const uint32_t sitio = uint32_t(ctx.lr);
   __imp__sub_82977688(ctx, base);
-  if (ctx.r3.u32 == 1) DormirEsperando();
+  if (ctx.r3.u32 == 1) DormirEsperando(kEsperaGpu, sitio);
 }
 
 extern std::atomic<bool> g_gow2_query_waited;  // gow2_gpu.cpp
@@ -58,14 +116,14 @@ REX_HOOK_RAW(sub_829783A8) {
   __imp__sub_829783A8(ctx, base);
   if (ctx.r3.u32 == 1) {  // S_FALSE: not there yet
     g_gow2_query_waited.store(true, std::memory_order_release);
-    DormirEsperando();
+    DormirEsperando(kEsperaConsulta);
   }
 }
 
 REX_EXTERN(__imp__sub_82955830);
 REX_HOOK_RAW(sub_82955830) {
   __imp__sub_82955830(ctx, base);
-  if (ctx.r3.u32 == 0) DormirEsperando();
+  if (ctx.r3.u32 == 0) DormirEsperando(kEsperaAudio);
 }
 
 // --- Real work done natively ---------------------------------------------------------------------------------------
@@ -330,4 +388,54 @@ REX_HOOK_RAW(sub_823ACD10) {
     }
   }
   rex::memory::store_and_swap<uint32_t>(base + ctx.r3.u32, found);
+}
+
+// sub_82A93150  the C runtime's memset (r3 destination, r4 byte, r5 bytes): byte and word loops in PowerPC.
+// sub_822C1428  a bone's quaternion (r3+0..12), translation (+16..24) and uniform scale (+28) to a 4x4 matrix at r4 (the
+//               2.0, 1.0 and 0.0 it reads from the image). Single-precision steps as the fmuls/fadds/fsubs it has, without
+//               fused multiply-adds, so the results are the same bits. 2-5 % of the game thread in fights.
+REX_EXTERN(__imp__sub_82A93150);
+REX_HOOK_RAW(sub_82A93150) {
+  if (!REXCVAR_GET(gow2_cpu_nativo)) {
+    __imp__sub_82A93150(ctx, base);
+    return;
+  }
+  if (const uint32_t n = ctx.r5.u32) std::memset(base + ctx.r3.u32, int(ctx.r4.u32 & 0xFF), n);
+}
+
+namespace {
+__attribute__((optimize("fp-contract=off"))) void MatrizDeHueso(uint8_t* base, uint32_t q, uint32_t m) {
+  auto lf = [&](uint32_t a) { return std::bit_cast<float>(rex::memory::load_and_swap<uint32_t>(base + a)); };
+  auto sf = [&](uint32_t a, float v) { rex::memory::store_and_swap<uint32_t>(base + a, std::bit_cast<uint32_t>(v)); };
+  const float dos = lf(0x820942DC), uno = lf(0x821CD78C), cero = lf(0x821CD77C);
+  const float x = lf(q), y = lf(q + 4), z = lf(q + 8), w = lf(q + 12), s = lf(q + 28);
+  std::memcpy(base + m + 48, base + q + 16, 12);  // the translation, bit for bit
+  const float y2 = y * dos, z2 = z * dos, x2 = x * dos;
+  const float yy = y * y2, zz = z * z2, xx = x * x2;
+  sf(m + 0, (uno - (zz + yy)) * s);
+  sf(m + 20, (uno - (zz + xx)) * s);
+  sf(m + 40, (uno - (yy + xx)) * s);
+  const float wx = w * x2, yz = y * z2;
+  sf(m + 36, (yz - wx) * s);
+  sf(m + 24, (wx + yz) * s);
+  const float wz = w * z2, xy = x * y2;
+  sf(m + 16, (xy - wz) * s);
+  sf(m + 4, (wz + xy) * s);
+  const float wy = w * y2, xz = x * z2;
+  sf(m + 32, (wy + xz) * s);
+  sf(m + 8, (xz - wy) * s);
+  sf(m + 12, cero);
+  sf(m + 28, cero);
+  sf(m + 44, cero);
+  sf(m + 60, uno);
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_822C1428);
+REX_HOOK_RAW(sub_822C1428) {
+  if (!REXCVAR_GET(gow2_cpu_nativo)) {
+    __imp__sub_822C1428(ctx, base);
+    return;
+  }
+  MatrizDeHueso(base, ctx.r3.u32, ctx.r4.u32);
 }

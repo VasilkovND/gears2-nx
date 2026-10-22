@@ -147,6 +147,11 @@ REXCVAR_DEFINE_INT32(gow2_oclusion_sin_esperar_ms, 8, "Gears2",
                      "Consultas de oclusion reales: cuando el juego se pone a esperar un resultado, las consultas "
                      "terminadas hace al menos estos milisegundos que la GPU aun no conto se contestan visibles al "
                      "momento (sin parar el fotograma). -1 = esperar hasta gow2_oclusion_espera_ms");
+REXCVAR_DEFINE_BOOL(gow2_busqueda_ps, true, "Gears2",
+                    "Modos de busqueda (ZL+ZR+Right): cada pulsacion deja sin dibujar un pixel shader del pase base "
+                    "(false: un vertex shader de los que escriben la profundidad de la escena)");
+REXCVAR_DEFINE_BOOL(gow2_busqueda_directa, true, "Gears2",
+                    "ZL+ZR+Right va directo a los modos de busqueda, sin pasar por los modos 1-10");
 REXCVAR_DEFINE_BOOL(gow2_saltar_vs_rotos, true, "Gears2",
                     "No dibujar los vertex shaders que rompen la geometria (nivel 2: el VS 38234053372F8F2F, con "
                     "matrices elegidas por indice, dibuja triangulos gigantes sobre toda la pantalla)");
@@ -819,6 +824,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
             REXCVAR_SET(switch_omitir_pedido, false);
             skip_mode_ = ((skip_mode_ ? skip_mode_ : skip_resume_) + 1) % kSkipModes;
             skip_resume_ = 0;
+            if (REXCVAR_GET(gow2_busqueda_directa) && skip_mode_ > 0 && skip_mode_ < kSkipModesFixed) {
+              skip_mode_ = kSkipModesFixed;
+            }
             if (skip_mode_ == kSkipModesFixed) {
               // The candidates: last frame's depth-writing vertex shaders, the most frequent first.
               std::vector<std::pair<uint32_t, uint32_t>> list(depth_vs_last_.begin(), depth_vs_last_.end());
@@ -830,7 +838,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                 search_vs_.push_back(vs);
                 names += fmt::format(" n{} ({} draws)", vs, draws);
               }
-              REXLOG_INFO("[gpu] search: {} vertex shaders write the scene's depth:{}", search_vs_.size(), names);
+              search_ps_ = REXCVAR_GET(gow2_busqueda_ps);
+              REXLOG_INFO("[gpu] search: {} {} shaders:{}", search_vs_.size(),
+                          search_ps_ ? "base-pass pixel" : "depth-writing vertex", names);
             }
             if (skip_mode_ >= kSkipModesFixed && skip_mode_ - kSkipModesFixed >= search_vs_.size()) {
               skip_mode_ = 0;
@@ -1208,14 +1218,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 
   std::string SkipModeName() const {
     if (skip_mode_ < kSkipModesFixed) return kSkipModeNames[skip_mode_];
-    return fmt::format("search {} of {}: vertex shader n{} not drawn", skip_mode_ - kSkipModesFixed + 1,
-                       search_vs_.size(), search_vs_[skip_mode_ - kSkipModesFixed]);
+    return fmt::format("search {} of {}: {} shader n{} not drawn", skip_mode_ - kSkipModesFixed + 1,
+                       search_vs_.size(), search_ps_ ? "pixel" : "vertex", search_vs_[skip_mode_ - kSkipModesFixed]);
   }
 
   bool SkippedByMode() const {
     namespace g = rex::graphics;
     if (skip_mode_ >= kSkipModesFixed) {
-      return vs_ && vs_->numero == search_vs_[skip_mode_ - kSkipModesFixed];
+      const auto* shader = search_ps_ ? ps_ : vs_;
+      return shader && shader->numero == search_vs_[skip_mode_ - kSkipModesFixed];
     }
     const uint32_t blend = Register(g::XE_GPU_REG_RB_BLENDCONTROL0);
     const uint32_t mask = Register(g::XE_GPU_REG_RB_COLOR_MASK);
@@ -1426,8 +1437,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       return;
     }
     // The search modes' candidates: vertex shaders writing depth while drawing color and depth.
-    if ((Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) &&
-        depth_vs_frame_.size() < 256) {
+    // (pixel search: the base pass, color into 2D0 format 3 with depth on)
+    if (REXCVAR_GET(gow2_busqueda_ps)) {
+      if (ps_ && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 &&
+          (Register(g::XE_GPU_REG_RB_COLOR_INFO) & 0xFFF) == 0x2D0 &&
+          ((Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF) == 3 && depth_vs_frame_.size() < 256) {
+        ++depth_vs_frame_[ps_->numero];
+      }
+    } else if ((Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 &&
+               (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) && depth_vs_frame_.size() < 256) {
       ++depth_vs_frame_[vs_->numero];
     }
     if (vs_->huella_contenedor == kBrokenSkinVs) {
@@ -1982,7 +2000,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // The pixel shader's first float constants (a material without textures shows its colour here).
     if (ps_) {
       std::string pc;
-      for (uint32_t c = 0; c < 6; ++c) {
+      for (uint32_t c = 0; c < 16; ++c) {
         const uint32_t r = 0x4000 + (256 + c) * 4;
         pc += fmt::format(" c{}=({:g} {:g} {:g} {:g})", c, std::bit_cast<float>(registers_[r]),
                           std::bit_cast<float>(registers_[r + 1]), std::bit_cast<float>(registers_[r + 2]),
@@ -2338,7 +2356,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t syncs_reported_ = 0;
   uint32_t skip_mode_ = 0, capture_after_skip_ = 0, skip_resume_ = 0;
   std::unordered_map<uint32_t, uint32_t> depth_vs_frame_, depth_vs_last_;  // search modes: VS number -> draws
-  std::vector<uint32_t> search_vs_;
+  std::vector<uint32_t> search_vs_;  // the search modes' shader numbers (vertex or pixel, search_ps_)
+  bool search_ps_ = false;
   uint32_t broken_vs_logged_ = 0;
   uint64_t skipped_broken_vs_ = 0;
   uint64_t prepass_skipped_ = 0;
