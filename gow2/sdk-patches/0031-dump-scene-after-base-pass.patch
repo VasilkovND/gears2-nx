@@ -1,0 +1,44 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 14:52:16
++++ b/include/rex/x360/deko/render.h	2026-10-22 14:52:16
+@@ -274,6 +274,9 @@
+   void VolcarResuelta(const ImagenDk& imagen, uint32_t base, uint32_t formato_guest);
+   void TerminarVolcado();
+   bool volcado_pedido_ = false, volcando_ = false;
++  // The dumped frame also gets the scene as the base pass left it (before the first light, k_2_10_10_10_FLOAT_AS_16_
++  // 16_16_16 into the scene's EDRAM): base FEED0000 + its EDRAM base in the dump's file name.
++  bool volcado_escena_hecho_ = false;
+   DkMemBlock volcado_bloque_ = nullptr;
+   uint8_t* volcado_cpu_ = nullptr;
+   DkGpuAddr volcado_gpu_ = 0;
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 14:52:16
++++ b/src/x360/deko/destinos.cpp	2026-10-22 14:52:16
+@@ -2098,6 +2098,7 @@
+       volcando_ = true;
+       volcado_usados_ = 0;
+       volcado_.clear();
++      volcado_escena_hecho_ = false;
+       REXLOG_INFO("[deko3d] volcado: el proximo fotograma, cada textura resuelta a la SD");
+     }
+   }
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 14:52:16
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 14:52:16
+@@ -1049,6 +1049,16 @@
+   const uint64_t inicio_ns = deko::AhoraNs();
+   const uint64_t espera_inicio_ns = nucleo_.NsEsperandoValla();  // waits for the GPU are not recording time
+   novedad_dibujo_.clear();
++  if (volcando_ && !volcado_escena_hecho_ && ((p.registros[gr::XE_GPU_REG_RB_COLOR_INFO] >> 16) & 0xF) == 12) {
++    volcado_escena_hecho_ = true;
++    const uint32_t info = p.registros[gr::XE_GPU_REG_RB_COLOR_INFO];
++    if (ImagenDk* escena = DestinoColor(info & 0xFFF, 3, p.registros[gr::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF)) {
++      HacerBorradoPendiente(*escena);
++      VolcarResuelta(escena->imagen, 0xFEED0000u | (info & 0xFFF), 3);
++      OlvidarEstado();
++      g_.pase_valido = false;
++    }
++  }
+   // Stage times (ns_etapas_), without the waits for the GPU that may happen inside a stage.
+   uint64_t marca_etapa = inicio_ns, espera_etapa = espera_inicio_ns;
+   auto cortar_etapa = [&](uint32_t etapa) {

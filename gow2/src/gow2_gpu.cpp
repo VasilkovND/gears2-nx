@@ -771,13 +771,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
           if (capture_after_skip_ && --capture_after_skip_ == 0) {
             SaveCapture();
             REXLOG_INFO("[gpu] capture above: skip mode {} ({})", skip_mode_, kSkipModeNames[skip_mode_]);
-            // The skipping modes hide part of the game (the ammo hologram is additive): back to normal rendering once
-            // their capture is taken; the next press goes on to the next mode. Safe mode stays until the next press.
-            if (skip_mode_ > 1) {
-              skip_resume_ = skip_mode_;
-              skip_mode_ = 0;
-              REXLOG_INFO("[gpu] skip mode {} done, normal rendering again", skip_resume_);
-            }
+            // Gears of War 2: the mode stays on screen until the next press (one frame was too short to see it).
           }
           if (REXCVAR_GET(switch_volcado_pedido)) {
             REXCVAR_SET(switch_volcado_pedido, false);
