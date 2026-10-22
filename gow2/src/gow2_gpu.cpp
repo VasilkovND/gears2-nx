@@ -33,6 +33,7 @@ void gow2_log_main_thread();  // src/gow2_guards.cpp
 #endif
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <array>
 #include <atomic>
@@ -146,6 +147,9 @@ REXCVAR_DEFINE_INT32(gow2_oclusion_sin_esperar_ms, 8, "Gears2",
                      "Consultas de oclusion reales: cuando el juego se pone a esperar un resultado, las consultas "
                      "terminadas hace al menos estos milisegundos que la GPU aun no conto se contestan visibles al "
                      "momento (sin parar el fotograma). -1 = esperar hasta gow2_oclusion_espera_ms");
+REXCVAR_DEFINE_BOOL(gow2_saltar_vs_rotos, true, "Gears2",
+                    "No dibujar los vertex shaders que rompen la geometria (nivel 2: el VS 38234053372F8F2F, con "
+                    "matrices elegidas por indice, dibuja triangulos gigantes sobre toda la pantalla)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
@@ -1236,6 +1240,42 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
   }
 
+  // Level 2's giant triangles (found with the search modes): this vertex shader picks its matrices from the float
+  // constants by an index it computes from a per-vertex value (fetch r1, 32_32_32_32_FLOAT at offset 32 of stream 31.1:
+  // a0 = ((r1.x + c10.x) mod 3) * 4, then c11..c14 + a0). What it is fed, for the first draws.
+  static constexpr uint64_t kBrokenSkinVs = UINT64_C(0x38234053372F8F2F);
+  void LogBrokenSkinDraw() {
+    if (broken_vs_logged_ >= 6) return;
+    ++broken_vs_logged_;
+    namespace g = rex::graphics;
+    const uint32_t v = 0x4800 + 31 * 6;
+    std::string text = fmt::format("[gpu] skin VS n{} draw: fetch 31 {:08X} {:08X} | {:08X} {:08X} | {:08X} {:08X}; "
+                                   "index offset {} prim {:08X}; constants",
+                                   vs_->numero, Register(v), Register(v + 1), Register(v + 2), Register(v + 3),
+                                   Register(v + 4), Register(v + 5), Register(g::XE_GPU_REG_VGT_INDX_OFFSET),
+                                   Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR));
+    for (uint32_t c = 10; c <= 26; ++c) {
+      const uint32_t r = 0x4000 + c * 4;
+      text += fmt::format(" c{}=({:g} {:g} {:g} {:g})", c, std::bit_cast<float>(Register(r)),
+                          std::bit_cast<float>(Register(r + 1)), std::bit_cast<float>(Register(r + 2)),
+                          std::bit_cast<float>(Register(r + 3)));
+    }
+    // Stream 31.1's first vertices, bytes 32-47 (the index and the two weights), as stored (big-endian floats).
+    const uint32_t base = Register(v + 2) & ~0x3u;
+    if (const uint8_t* m = base ? memory_->TranslatePhysical(base) : nullptr) {
+      text += "; stream 31.1 at +32:";
+      for (uint32_t i = 0; i < 6; ++i) {
+        text += " (";
+        for (uint32_t k = 0; k < 4; ++k) {
+          text += fmt::format("{}{:g}", k ? " " : "",
+                              std::bit_cast<float>(rex::memory::load_and_swap<uint32_t>(m + i * 64 + 32 + k * 4)));
+        }
+        text += ")";
+      }
+    }
+    REXLOG_INFO("{}", text);
+  }
+
   // The lamp glow (gVFGlowInfo) and corona (modulate_by_corona_info_vs) vertex shaders: both read the lamp's
   // visibility from a texture in the vertex shader (tfetch2DVertice) and build their quads from it. Suspects for the
   // streaks next to flickering lamps; sin_resplandor.flag next to the NRO leaves them out to tell.
@@ -1389,6 +1429,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     if ((Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) &&
         depth_vs_frame_.size() < 256) {
       ++depth_vs_frame_[vs_->numero];
+    }
+    if (vs_->huella_contenedor == kBrokenSkinVs) {
+      LogBrokenSkinDraw();
+      if (REXCVAR_GET(gow2_saltar_vs_rotos)) {
+        ++skipped_broken_vs_;
+        return;
+      }
     }
     if (IsGlowShader(vs_)) {
       if (glow_draws_logged_ < 12) {
@@ -2279,6 +2326,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t skip_mode_ = 0, capture_after_skip_ = 0, skip_resume_ = 0;
   std::unordered_map<uint32_t, uint32_t> depth_vs_frame_, depth_vs_last_;  // search modes: VS number -> draws
   std::vector<uint32_t> search_vs_;
+  uint32_t broken_vs_logged_ = 0;
+  uint64_t skipped_broken_vs_ = 0;
   uint64_t prepass_skipped_ = 0;
   uint64_t skipped_by_mode_ = 0;
   uint64_t clears_logged_1x_ = 0;
