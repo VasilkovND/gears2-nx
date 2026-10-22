@@ -1,0 +1,97 @@
+diff -ru a/include/rex/system/xsocket.h b/include/rex/system/xsocket.h
+--- a/include/rex/system/xsocket.h	2026-10-22 11:55:31
++++ b/include/rex/system/xsocket.h	2026-10-22 11:55:31
+@@ -100,6 +100,7 @@
+   X_STATUS Close();
+ 
+   X_STATUS SetOption(uint32_t level, uint32_t optname, void* optval_ptr, uint32_t optlen);
++  int GetOption(uint32_t level, uint32_t optname, uint8_t* optval_ptr, uint32_t* optlen);
+   X_STATUS IOControl(uint32_t cmd, uint8_t* arg_ptr);
+ 
+   X_STATUS Connect(N_XSOCKADDR* name, int name_len);
+diff -ru a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+--- a/src/kernel/xam/xam_net.cpp	2026-10-22 11:55:31
++++ b/src/kernel/xam/xam_net.cpp	2026-10-22 11:55:31
+@@ -643,6 +643,26 @@
+   return XSUCCEEDED(status) ? 0 : -1;
+ }
+ 
++u32 NetDll_getsockopt_entry(u32 caller, u32 socket_handle, u32 level, u32 optname, mapped_void optval_ptr,
++                            mapped_u32 optlen_ptr) {
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  if (!socket) {
++    XThread::SetLastError(0x2736);  // WSAENOTSOCK
++    return -1;
++  }
++  if (!optval_ptr || !optlen_ptr) {
++    XThread::SetLastError(0x271E);  // WSAEFAULT
++    return -1;
++  }
++  uint32_t len = optlen_ptr.value();
++  if (socket->GetOption(level, optname, optval_ptr, &len) != 0) {
++    XThread::SetLastError(0x2726);  // WSAEINVAL
++    return -1;
++  }
++  *optlen_ptr = len;
++  return 0;
++}
++
+ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void arg_ptr) {
+   auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
+   if (!socket) {
+@@ -1121,4 +1141,4 @@
+ REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
+ REX_EXPORT_STUB(__imp__NetDll_getpeername);
+ REX_EXPORT(__imp__NetDll_getsockname, rex::kernel::xam::NetDll_getsockname_entry)
+-REX_EXPORT_STUB(__imp__NetDll_getsockopt);
++REX_EXPORT(__imp__NetDll_getsockopt, rex::kernel::xam::NetDll_getsockopt_entry)
+diff -ru a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+--- a/src/system/xsocket.cpp	2026-10-22 11:55:31
++++ b/src/system/xsocket.cpp	2026-10-22 11:55:31
+@@ -82,9 +82,19 @@
+     return X_STATUS_SUCCESS;
+   }
+ 
+-  int ret = setsockopt(native_handle_, level, optname, (char*)optval_ptr, optlen);
++  // 4-byte options (buffer sizes, flags) are guest big-endian ints: swapped to the host's order (a 128 KB receive
++  // buffer became 512 bytes otherwise, or an error).
++  int ret;
++  if (optlen == 4 && optval_ptr) {
++    uint32_t value;
++    std::memcpy(&value, optval_ptr, 4);
++    value = __builtin_bswap32(value);
++    ret = setsockopt(native_handle_, level, optname, (const char*)&value, sizeof(value));
++  } else {
++    ret = setsockopt(native_handle_, level, optname, (char*)optval_ptr, optlen);
++  }
+   if (ret < 0) {
+-    // TODO: WSAGetLastError()
++    REXLOG_WARN("XSocket: setsockopt({}, {:X}, {:X}) failed: errno {}", int(native_handle_), level, optname, errno);
+     return X_STATUS_UNSUCCESSFUL;
+   }
+ 
+@@ -94,6 +104,24 @@
+   }
+ 
+   return X_STATUS_SUCCESS;
++}
++
++// getsockopt into a guest buffer: 4-byte values as big-endian ints. 0 or -1.
++int XSocket::GetOption(uint32_t level, uint32_t optname, uint8_t* optval_ptr, uint32_t* optlen) {
++  uint8_t value[64];
++  socklen_t len = std::min<uint32_t>(*optlen, sizeof(value));
++  std::memset(value, 0, sizeof(value));
++  const int ret = getsockopt(native_handle_, level, optname, value, &len);
++  if (ret < 0) return -1;
++  if (len == 4) {
++    uint32_t v;
++    std::memcpy(&v, value, 4);
++    v = __builtin_bswap32(v);
++    std::memcpy(value, &v, 4);
++  }
++  std::memcpy(optval_ptr, value, std::min<uint32_t>(len, *optlen));
++  *optlen = len;
++  return 0;
+ }
+ 
+ X_STATUS XSocket::IOControl(uint32_t cmd, uint8_t* arg_ptr) {

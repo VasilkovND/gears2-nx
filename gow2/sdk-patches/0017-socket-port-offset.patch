@@ -1,0 +1,46 @@
+diff -ru a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+--- a/src/system/xsocket.cpp	2026-10-22 11:54:16
++++ b/src/system/xsocket.cpp	2026-10-22 11:54:16
+@@ -110,6 +110,15 @@
+ // structure is not the guest's: BSD layouts (the Switch's libnx) start with a length byte and a one-byte family, and
+ // the port and address are kept in network order. Passing the guest structure cast to sockaddr* made every bind on
+ // the Switch fail (EACCES: family 0), and sendto/recvfrom swapped the port (1000 left as 59395).
++// Ports below 1024 are privileged on the host (the Switch's bsd:u answers EACCES, as Android does), and Gears of War 2
++// binds UDP 1000 even for its single-player campaign. They are moved up by kPortOffset on the host side, in both
++// directions, so the game keeps seeing its own numbers (the PC port does the same with its net_port_offset).
++constexpr uint16_t kPortOffset = 40000;
++static uint16_t HostPort(uint16_t guest) { return guest && guest < 1024 ? uint16_t(guest + kPortOffset) : guest; }
++static uint16_t GuestPort(uint16_t host) {
++  return host >= kPortOffset && host < kPortOffset + 1024 ? uint16_t(host - kPortOffset) : host;
++}
++
+ static sockaddr_in NativeAddress(const N_XSOCKADDR_IN& x) {
+   sockaddr_in n;
+   std::memset(&n, 0, sizeof(n));
+@@ -117,14 +126,14 @@
+   n.sin_len = sizeof(n);
+ #endif
+   n.sin_family = AF_INET;
+-  n.sin_port = htons(uint16_t(x.sin_port));
++  n.sin_port = htons(HostPort(uint16_t(x.sin_port)));
+   n.sin_addr.s_addr = htonl(uint32_t(x.sin_addr));
+   return n;
+ }
+ 
+ static void GuestAddress(const sockaddr_in& n, N_XSOCKADDR_IN* x) {
+   x->sin_family = 2;  // AF_INET
+-  x->sin_port = ntohs(n.sin_port);
++  x->sin_port = GuestPort(ntohs(n.sin_port));
+   x->sin_addr = ntohl(n.sin_addr.s_addr);
+   std::memset(x->x_sin_zero, 0, sizeof(x->x_sin_zero));
+ }
+@@ -163,7 +172,8 @@
+     REXLOG_WARN("XSocket: bind({}) to port {} failed: errno {}", int(native_handle_), uint16_t(name->sin_port), errno);
+     return X_STATUS_UNSUCCESSFUL;
+   }
+-  REXLOG_INFO("XSocket: bind({}) to port {}", int(native_handle_), uint16_t(name->sin_port));
++  REXLOG_INFO("XSocket: bind({}) to port {} (host port {})", int(native_handle_), uint16_t(name->sin_port),
++              ntohs(n.sin_port));
+ 
+   bound_ = true;
+   bound_port_ = name->sin_port;
