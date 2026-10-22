@@ -17,10 +17,15 @@
 
 #include "gow2_pch.h"
 
+#include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 #include <rex/memory/utils.h>
 
 #if defined(__SWITCH__)
@@ -136,4 +141,102 @@ REX_HOOK_RAW(sub_827FFD00) {
     EscribirF(base, fx + 136, s136);
   }
   ctx.r3.u64 = 0;
+}
+
+// sub_82AB1C28  XMemDecompress (the xcompress library linked into the game): Unreal decompresses every 128 KB block of
+//               its packages and streamed textures with it, block by block. The block is an XMemCompress LZX stream
+//               (window 2^17): frames prefixed with FF + u16 uncompressed + u16 compressed size, or a bare u16
+//               compressed size (a 32 KB frame). Decoded natively with the SDK's libmspack; a block it does not decode
+//               to exactly the size asked for goes to the recompiled code, so nothing can come out different.
+//               5-7 % of a core while textures stream. gow2_lzx_nativo = false: always the recompiled code.
+REXCVAR_DEFINE_BOOL(gow2_lzx_nativo, true, "Gears2",
+                    "XMemDecompress (sub_82AB1C28) con libmspack nativo en vez del codigo recompilado");
+
+extern "C" {
+#include <mspack.h>
+#include <lzx.h>
+}
+
+namespace {
+struct FuenteLzx {
+  const uint8_t* datos;
+  size_t tam, pos, resto;  // resto: bytes left in the current frame
+};
+struct DestinoLzx {
+  uint8_t* datos;
+  size_t tam, pos;
+};
+int LeerTramas(mspack_file* archivo, void* buffer, int bytes) {
+  auto* f = reinterpret_cast<FuenteLzx*>(archivo);
+  if (f->resto == 0) {
+    if (f->pos >= f->tam) return 0;
+    if (f->datos[f->pos] == 0xFF) {
+      if (f->pos + 5 > f->tam) return 0;
+      f->resto = size_t(f->datos[f->pos + 3]) << 8 | f->datos[f->pos + 4];
+      f->pos += 5;
+    } else {
+      if (f->pos + 2 > f->tam) return 0;
+      f->resto = size_t(f->datos[f->pos]) << 8 | f->datos[f->pos + 1];
+      f->pos += 2;
+    }
+    if (f->resto > f->tam - f->pos) f->resto = f->tam - f->pos;
+    if (f->resto == 0) return 0;
+  }
+  const size_t n = std::min(size_t(bytes), f->resto);
+  std::memcpy(buffer, f->datos + f->pos, n);
+  f->pos += n;
+  f->resto -= n;
+  return int(n);
+}
+int EscribirLzx(mspack_file* archivo, void* buffer, int bytes) {
+  auto* f = reinterpret_cast<DestinoLzx*>(archivo);
+  const size_t n = std::min(size_t(bytes), f->tam - f->pos);
+  std::memcpy(f->datos + f->pos, buffer, n);
+  f->pos += n;
+  return int(n);
+}
+void* ReservarLzx(mspack_system*, size_t bytes) { return std::calloc(bytes, 1); }
+void LiberarLzx(void* p) { std::free(p); }
+void CopiarLzx(void* origen, void* destino, size_t bytes) { std::memmove(destino, origen, bytes); }
+void MensajeLzx(mspack_file*, const char*, ...) {}
+
+bool DescomprimirLzx(const uint8_t* origen, size_t tam_origen, uint8_t* destino, size_t tam_destino) {
+  if (!tam_origen || !tam_destino) return false;
+  mspack_system sistema{};
+  sistema.read = LeerTramas;
+  sistema.write = EscribirLzx;
+  sistema.alloc = ReservarLzx;
+  sistema.free = LiberarLzx;
+  sistema.copy = CopiarLzx;
+  sistema.message = MensajeLzx;
+  FuenteLzx fuente{origen, tam_origen, 0, 0};
+  DestinoLzx salida{destino, tam_destino, 0};
+  lzxd_stream* lzx = lzxd_init(&sistema, reinterpret_cast<mspack_file*>(&fuente),
+                               reinterpret_cast<mspack_file*>(&salida), 17, 0, 0x8000, off_t(tam_destino), 0);
+  if (!lzx) return false;
+  const int r = lzxd_decompress(lzx, off_t(tam_destino));
+  lzxd_free(lzx);
+  return r == MSPACK_ERR_OK && salida.pos == tam_destino;
+}
+std::atomic<uint64_t> g_lzx_nativos{0}, g_lzx_recompilados{0};
+}  // namespace
+
+REX_EXTERN(__imp__sub_82AB1C28);
+REX_HOOK_RAW(sub_82AB1C28) {
+  // XMemDecompress(context r3, destination r4, &destination size r5, source r6, source size r7): S_OK = 0.
+  const uint32_t destino = ctx.r4.u32, p_tam = ctx.r5.u32, origen = ctx.r6.u32, tam_origen = ctx.r7.u32;
+  if (REXCVAR_GET(gow2_lzx_nativo) && destino && p_tam && origen && tam_origen) {
+    const uint32_t tam_destino = rex::memory::load_and_swap<uint32_t>(base + p_tam);
+    if (DescomprimirLzx(base + origen, tam_origen, base + destino, tam_destino)) {
+      const uint64_t n = g_lzx_nativos.fetch_add(1) + 1;
+      if ((n & (n - 1)) == 0 && n >= 256) {
+        REXLOG_INFO("[lzx] {} bloques descomprimidos en nativo, {} por el codigo recompilado", n,
+                    g_lzx_recompilados.load());
+      }
+      ctx.r3.u64 = 0;
+      return;
+    }
+    g_lzx_recompilados.fetch_add(1);
+  }
+  __imp__sub_82AB1C28(ctx, base);
 }

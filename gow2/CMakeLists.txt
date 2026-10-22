@@ -45,6 +45,8 @@ if(GOW2_MSR_GLOBAL)
 endif()
 rexglue_switch_add_deko3d(gow2)
 target_compile_definitions(gow2 PRIVATE GOW2_DEKO3D=1)
+# gow2_perf_hooks.cpp decompresses the game's LZX blocks natively with the SDK's libmspack (lzxd).
+target_link_libraries(gow2 PRIVATE mspack)
 target_include_directories(gow2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../shaders ${REXSDK_DIR}/thirdparty/xxHash)
 
 # The shader create hooks need the two names codegen/names.toml gives the XDK's Create*Shader (not known before the
