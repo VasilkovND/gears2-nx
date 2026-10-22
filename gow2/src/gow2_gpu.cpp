@@ -1553,7 +1553,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       stencil = ref_mask & (ref_mask >> 16) & 0xFF;
     }
     constexpr uint32_t kNullCommand = 3u << 20;  // CopyCommand::kNull: clear only, copy nothing
-    auto clear_depth_at = [&](uint32_t edram_base, std::string& what) {
+    // Direct3D's clear quad with depth writes off and the stencil on (depthcontrol 00008701): a stencil-only clear.
+    // Gears of War 2 does one after each light (through the scene's own depth buffer); as a full clear it wiped the
+    // scene's depth in the middle of the frame. Bit 30 of RB_COPY_CONTROL (unused by the Xenos) tells the renderer
+    // (SDK patch 0030).
+    const bool stencil_only = !(depth_control & 0x4) && (depth_control & 0x1);
+    auto clear_depth_at = [&](uint32_t edram_base, std::string& what, bool only_stencil = false) {
       // The direction of the draws into this depth buffer when it has any, the frame's otherwise.
       bool reversed_here = reversed;
       if (auto it = depth_direction_.find(edram_base & 0xFFF);
@@ -1563,10 +1568,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       const uint32_t depth_value = (reversed_here ? 0u : 0xFFFFFF00u) | stencil;
       rex::x360::RegistrosCopia c = base;
       c.rb_depth_info = (depth_info & ~uint32_t(0xFFF)) | (edram_base & 0xFFF);
-      c.rb_copy_control = 4u | (1u << 9) | kNullCommand;
+      c.rb_copy_control = 4u | (1u << 9) | kNullCommand | (only_stencil ? 1u << 30 : 0u);
       c.rb_depth_clear = depth_value;
       destinos_->Copiar(c);
-      what += fmt::format(" z={:03X}->{:08X}", edram_base & 0xFFF, depth_value);
+      what += fmt::format(" z={:03X}->{:08X}{}", edram_base & 0xFFF, depth_value, only_stencil ? " (stencil only)" : "");
     };
     std::string what;
     const uint32_t c0_base = base.rb_color_info[0] & 0xFFF;
@@ -1603,12 +1608,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const bool z_written = depth_only || (depth_control & 0x4) || (depth_control & 0x1);
     if (z_written && !(c0_written && z_base == c0_base) &&
         std::find(aliased_depth, aliased_depth + n_aliased, z_base) == aliased_depth + n_aliased) {
-      clear_depth_at(z_base, what);
+      clear_depth_at(z_base, what, stencil_only);
       // Depth written over c0's EDRAM (Dead Space 2's light buffer clear: depth-only mode, depth target on 2D0 where
       // the light buffer is): on the console the same EDRAM bytes are the color target's, so the color is cleared by
       // it (depth 0 and stencil 0 there: black). The renderer keeps depth and color in separate images, so the color
       // image is cleared too; without it the lights were added on top of the normals left there by the G-buffer.
-      if (z_base == c0_base && (mask & 0xF)) {
+      if (z_base == c0_base && (mask & 0xF) && !stencil_only) {
         rex::x360::RegistrosCopia c = base;
         c.rb_copy_control = 0u | (1u << 8) | kNullCommand;
         c.rb_color_clear = 0;

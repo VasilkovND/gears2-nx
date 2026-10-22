@@ -1,0 +1,48 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 14:45:47
++++ b/include/rex/x360/deko/render.h	2026-10-22 14:45:47
+@@ -87,6 +87,8 @@
+   uint32_t resuelta_base = 0;
+   bool borrado_pendiente = false;
+   float borrado_z = 1.0f;
++  // The pending clear is of the stencil only (kCopiaSoloEstencil): the depth stays.
++  bool borrado_solo_estencil = false;
+   uint8_t borrado_estencil = 0;
+   float borrado_color[4] = {};  // color targets: the last clear's value (pending or done)
+   // The useful area (nfsmw_dk_borrar_area_util): targets are max(720, pitch) tall (1280x1280 for a 1280x720 scene,
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 14:45:47
++++ b/src/x360/deko/destinos.cpp	2026-10-22 14:45:47
+@@ -1318,6 +1318,23 @@
+   }
+   previo = {reg.rb_depth_clear, dibujados_};
+   ++borrados_profundidad_;
++  // Bit 30 of RB_COPY_CONTROL, unused by the Xenos: a stencil-only clear asked for by the game's clear emulation
++  // (Direct3D's clear quad with depth writes off). Gears of War 2 clears the stencil after each light; clearing the
++  // depth with it wiped the scene's depth in the middle of the frame. A full clear still pending stays full.
++  const bool solo_estencil = (reg.rb_copy_control >> 30) & 0x1;
++  profundidad->borrado_solo_estencil =
++      solo_estencil && (!profundidad->borrado_pendiente || profundidad->borrado_solo_estencil);
++  if (solo_estencil && !profundidad->borrado_pendiente) {
++    profundidad->borrado_estencil = uint8_t(reg.rb_depth_clear & 0xFF);
++    profundidad->borrado_pendiente = true;
++    if (REXCVAR_GET(nfsmw_dk_borrado_z_aplazado)) {
++      ++borrados_aplazados_;
++      g_.pase_valido = false;
++      return;
++    }
++    HacerBorradoPendiente(*profundidad);
++    return;
++  }
+   profundidad->borrado_z = float(reg.rb_depth_clear >> 8) / 16777215.0f;
+   profundidad->borrado_estencil = uint8_t(reg.rb_depth_clear & 0xFF);
+   profundidad->borrado_pendiente = true;
+@@ -1367,7 +1384,7 @@
+   dkCmdBufSetScissors(cmd, 0, &tijera, 1);  // clears respect the scissor (HowToDeko3d.md, section 6, item 9)
+   if (destino.profundidad) {
+     // The clear also sets the ZCULL data of the bound depth (deko3d).
+-    dkCmdBufClearDepthStencil(cmd, true, destino.borrado_z, 0xFF, destino.borrado_estencil);
++    dkCmdBufClearDepthStencil(cmd, !destino.borrado_solo_estencil, destino.borrado_z, 0xFF, destino.borrado_estencil);
+   } else {
+     const float* c = destino.borrado_color;
+     dkCmdBufClearColorFloat(cmd, i, DkColorMask_RGBA, c[0], c[1], c[2], c[3]);
