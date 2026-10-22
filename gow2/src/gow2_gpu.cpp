@@ -90,6 +90,7 @@ REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, nfsmw_dk_todas_las_salidas);  // skip mode 9 (SDK patch 0033)
 REXCVAR_DECLARE(bool, nfsmw_dk_gamma_lineal);       // skip mode 10 (SDK patch 0033)
+REXCVAR_DECLARE(std::string, rex_archivos_ocultos);  // SDK patch 0048: files the game does not find
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
 // The SDK renderer's shadow-pass shortcuts (sdk/src/x360/deko/destinos.cpp; the SDK keeps their nfsmw_ names): both
 // drop colorless draws that alpha-test or discard, which here are ordinary depth-only draws. Off for Dead Space 2.
@@ -151,6 +152,9 @@ REXCVAR_DEFINE_STRING(gow2_sonda, "700,650", "Gears2",
                       "Sonda del fotograma tras la traza (ZL+ZR+Left): x,y de un cuadrado de 8x8 pixeles; cada dibujo "
                       "del pase base se dibuja solo ahi y la GPU cuenta sus pixeles: el ultimo que pinta es el que se ve "
                       "en ese punto (vacio = sin sonda)");
+REXCVAR_DEFINE_BOOL(gow2_saltar_logos, true, "Gears2",
+                    "Sin los videos de los logotipos del arranque (Epic y Microsoft Game Studios): el juego va directo a "
+                    "la pantalla de titulo");
 REXCVAR_DEFINE_BOOL(gow2_busqueda_ps, true, "Gears2",
                     "Modos de busqueda (ZL+ZR+Right): cada pulsacion deja sin dibujar un pixel shader del pase base "
                     "(false: un vertex shader de los que escriben la profundidad de la escena)");
@@ -335,6 +339,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     ring_thread_->set_name("GPU ring");
     ring_thread_->Create();
     REXLOG_INFO("[gpu] ring reader started");
+    // The startup logos: the game skips a movie it cannot open (as it does with the _RUS ones it looks for first).
+    if (REXCVAR_GET(gow2_saltar_logos) && REXCVAR_GET(rex_archivos_ocultos).empty()) {
+      REXCVAR_SET(rex_archivos_ocultos, std::string("movies\\epiclogo,movies\\mgslogo"));
+      REXLOG_INFO("[gpu] startup logos skipped (gow2_saltar_logos)");
+    }
     return X_STATUS_SUCCESS;
   }
 
