@@ -159,6 +159,11 @@ REXCVAR_DEFINE_BOOL(gow2_busqueda_directa, true, "Gears2",
 REXCVAR_DEFINE_BOOL(gow2_saltar_vs_rotos, true, "Gears2",
                     "No dibujar los vertex shaders que rompen la geometria (nivel 2: el VS 38234053372F8F2F, con "
                     "matrices elegidas por indice, dibuja triangulos gigantes sobre toda la pantalla)");
+REXCVAR_DEFINE_INT32(gow2_arboles, 0, "Gears2",
+                     "Los arboles del nivel 2 (VS 38234053372F8F2F): 0 = no se dibujan (gow2_saltar_vs_rotos), 1 = tal cual, "
+                     "2 = con las matrices de balanceo (c11-c22) cambiadas por la identidad");
+REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, true, "Gears2",
+                    "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
@@ -825,6 +830,18 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         if (EnsureRenderer()) {
           // VdSwap describes the frontbuffer in fetch constant 0; an empty TexturaSwap finds nothing (black).
           destinos_->Presentar(presenter_.get(), rex::x360::LeerTexturaSwap(registers_.data()), 1280, 720);
+          if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(gow2_arboles_prueba)) {
+            REXCVAR_SET(switch_omitir_pedido, false);
+            REXCVAR_SET(gow2_arboles, (REXCVAR_GET(gow2_arboles) + 1) % 3);
+            static constexpr const char* kModos[3] = {"not drawn", "drawn as they are", "drawn with identity sway matrices"};
+            REXLOG_INFO("[gpu] trees mode {}: {} (the next capture shows it)", REXCVAR_GET(gow2_arboles),
+                        kModos[REXCVAR_GET(gow2_arboles)]);
+            tree_capture_after_ = 3;
+          }
+          if (tree_capture_after_ && --tree_capture_after_ == 0) {
+            SaveCapture();
+            REXLOG_INFO("[gpu] capture above: trees mode {}", REXCVAR_GET(gow2_arboles));
+          }
           if (REXCVAR_GET(switch_omitir_pedido)) {
             REXCVAR_SET(switch_omitir_pedido, false);
             skip_mode_ = ((skip_mode_ ? skip_mode_ : skip_resume_) + 1) % kSkipModes;
@@ -1454,12 +1471,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) && depth_vs_frame_.size() < 256) {
       ++depth_vs_frame_[vs_->numero];
     }
+    bool tree_identity = false;
     if (vs_->huella_contenedor == kBrokenSkinVs) {
       LogBrokenSkinDraw();
-      if (REXCVAR_GET(gow2_saltar_vs_rotos)) {
+      const int32_t mode = REXCVAR_GET(gow2_arboles);
+      if (mode == 0 && REXCVAR_GET(gow2_saltar_vs_rotos)) {
         ++skipped_broken_vs_;
         return;
       }
+      tree_identity = mode == 2;
     }
     if (IsGlowShader(vs_)) {
       if (glow_draws_logged_ < 12) {
@@ -1536,7 +1556,21 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       request.generacion_encuadre = generacion_encuadre_;
       destinos_->EmpezarOclusion(probe_key);
     }
+    // gow2_arboles = 2: the trees' three sway matrices (c11-c22) replaced by the identity for this draw.
+    std::array<uint32_t, 48> saved_sway{};
+    if (tree_identity) {
+      for (uint32_t i = 0; i < 48; ++i) {
+        saved_sway[i] = registers_[0x4000 + 11 * 4 + i];
+        registers_[0x4000 + 11 * 4 + i] = (i % 16) % 5 == 0 ? 0x3F800000u : 0u;  // rows 0-3 of each 4x4: 1 on the diagonal
+      }
+      ++generacion_constantes_vs_;
+      request.generacion_constantes_vs = generacion_constantes_vs_;
+    }
     const bool drawn = destinos_->Dibujar(request);
+    if (tree_identity) {
+      for (uint32_t i = 0; i < 48; ++i) registers_[0x4000 + 11 * 4 + i] = saved_sway[i];
+      ++generacion_constantes_vs_;
+    }
     if (probe) {
       const uint64_t ticket = destinos_->TerminarOclusionAsincrona(probe_key);
       registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] = saved_tl;
@@ -2438,6 +2472,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::chrono::steady_clock::time_point probe_started_;
   bool search_ps_ = false;
   uint32_t broken_vs_logged_ = 0;
+  uint32_t tree_capture_after_ = 0;
   uint64_t skipped_broken_vs_ = 0;
   uint64_t prepass_skipped_ = 0;
   uint64_t skipped_by_mode_ = 0;
