@@ -1615,6 +1615,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         next_auto_dump_s_ = gap > 0 ? t + gap : 1e30;
         REXLOG_INFO("[gpu] automatic frame dump {} at {:.0f} s", auto_dumps_, t);
         destinos_->PedirVolcado();
+        // And every draw of that frame in the log, as the manual dump (ZL + ZR + Left) does.
+        draw_tracing_ = true;
+        draw_trace_n_ = 0;
+        draw_trace_cap_ = 3000;
       }
     }
   }
