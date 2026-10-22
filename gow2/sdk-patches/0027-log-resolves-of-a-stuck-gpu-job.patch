@@ -1,0 +1,24 @@
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 14:07:53
++++ b/src/x360/deko/destinos.cpp	2026-10-22 14:07:53
+@@ -1238,6 +1238,20 @@
+         ++resuelta->imagen.version;
+         SombraMinimoResueltaEscrita(base_resuelta);
+         ++copias_;
++        // GPU hang diagnostics: every color resolve goes into the ring of VolcarNovedades (the two hangs seen came
++        // 2 s after small resolves at the right edge of the screen).
++        {
++          std::string linea = fmt::format("resolve ({},{})-({},{}) de {:03X} f{} {}x{} a {:08X} ({}x{}) en ({},{}) {}x{}{}",
++                                          x0, y0, x1, y1, info_color & 0xFFF, formato_color, destino_render->ancho,
++                                          destino_render->alto, base_resuelta, resuelta->imagen.ancho,
++                                          resuelta->imagen.alto, dx, dy, ancho, alto,
++                                          encoger ? " encogida" : se_lee ? " leida" : "");
++          if (novedades_.size() < kNovedades) {
++            novedades_.emplace_back(trabajo_, std::move(linea));
++          } else {
++            novedades_[novedades_pos_++ % kNovedades] = {trabajo_, std::move(linea)};
++          }
++        }
+         if (volcando_) {
+           VolcarResuelta(resuelta->imagen, base_resuelta, resuelta->formato_guest);
+         }
