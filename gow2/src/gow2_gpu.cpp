@@ -125,6 +125,10 @@ REXCVAR_DEFINE_INT32(gow2_auto_captura_s, 5, "Gears2",
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_primero_s, 120, "Gears2",
                      "Segundo de juego del primer volcado automatico de las texturas resueltas de un fotograma");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_cada_s, 300, "Gears2", "Segundos entre volcados automaticos; 0 = solo el primero");
+REXCVAR_DEFINE_BOOL(gow2_sin_prepaso_z, true, "Gears2",
+                    "Sin el pase previo de solo profundidad de la escena: el pase base escribe su propia profundidad. "
+                    "Con el pase previo, la profundidad de dos vertex shaders compilados aparte no coincide bit a bit y "
+                    "el pase base (GEQUAL) se descartaba: el mundo salia negro");
 REXCVAR_DEFINE_BOOL(gow2_consultas_siempre_visibles, false, "Gears2",
                     "Consultas de oclusion: cada segundo ZPD cuenta como el final de una consulta visible, aunque no lleve la marca de D3D (prueba)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
@@ -1109,7 +1113,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       "additive effects (SRC_ALPHA+ONE 00010106, ONE+ONE 01010101)",
       "everything blended (blend other than 00010001)",
       "alpha-tested (RB_COLORCONTROL alpha test on)",
-      "Gears of War 2: no depth prepass (depth-only draws writing the scene's depth, base 000)",
+      "Gears of War 2: no depth prepass (already the default, gow2_sin_prepaso_z; here regardless of it)",
       "Gears of War 2: vertex shaders with every interpolator (nfsmw_dk_todas_las_salidas)",
       "Gears of War 2: gamma textures read as linear (nfsmw_dk_gamma_lineal; textures loaded from now on)",
   };
@@ -1283,6 +1287,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     if (!ps_ && !depth_only) {
       ++sin_ps_;
+      return;
+    }
+    // gow2_sin_prepaso_z: the scene's depth prepass (depth-only draws writing the depth buffer at EDRAM 000) is not
+    // drawn; the base pass that follows tests GEQUAL and writes depth itself, so it ends up the same.
+    if (REXCVAR_GET(gow2_sin_prepaso_z) && skip_mode_ != 8 && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5 &&
+        (Register(g::XE_GPU_REG_RB_DEPTH_INFO) & 0xFFF) == 0 && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4)) {
+      ++prepass_skipped_;
       return;
     }
     if (skip_mode_ > 1 && SkippedByMode()) {
@@ -2060,6 +2071,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t vs_physical_ = 0;
   uint32_t syncs_reported_ = 0;
   uint32_t skip_mode_ = 0, capture_after_skip_ = 0, skip_resume_ = 0;
+  uint64_t prepass_skipped_ = 0;
   uint64_t skipped_by_mode_ = 0;
   uint64_t clears_logged_1x_ = 0;
   std::unordered_set<uint64_t> glow_logged_;
