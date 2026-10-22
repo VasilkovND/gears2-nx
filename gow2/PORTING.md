@@ -17,6 +17,23 @@ than a frame. Levels 1 and 2 played through; every one of the game's 35,953 shad
 | Speed | Game thread bound (UnrealScript interpreter); GPU 25-38 ms per frame at 768 MHz |
 | Language | Russian (`user_language = 12`) |
 
+### Measured (2026-10-22, run 49)
+
+The 0.8.0 NRO with every shader, handheld, sys-clk at CPU 1785 / GPU 614.4 / RAM 1600 MHz, sampler off; levels 1
+(garden: the ground is back) and 2 (Assault 01-08).
+
+| | fps | Game thread | GPU per frame (busy / idle) |
+| --- | --- | --- | --- |
+| Quiet | 28-30 (the game's cap) | 20-60 % | 25-30 / 5-15 ms |
+| Fights | 19-24 | 80-90 % | 30-38 / 6-12 ms |
+| Streaming the next part (SP_Assault_07_S, SP_Assault_08, Textures.tfc) | 15-18 | 58-80 % | 28-32 / 21-36 ms |
+| All 68 gameplay windows | 24.2 on average (15.5-30.1) | | |
+
+While a level part streams in, neither the game thread nor the GPU is full (the process uses ~2.1 of its 3 cores): the
+card's reads are slow (128 KB blocks take 8-25 ms, many of them read again), and the game waits for them. The shader
+library index loads in 4.8 s; 128 shaders were read from the card in the session, 2.2 ms each; the DKSH table, 0.1 s.
+The trees' vertex shader logged its inputs (`[gpu] skin VS n7842`), for the fix.
+
 ## What it took (0.8.0)
 
 Every item names its switch (a `gow2.toml` cvar) and its code; SDK changes are the patches in `gow2/sdk-patches/`.

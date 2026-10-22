@@ -13,6 +13,22 @@ a homebrew NRO, and frames are drawn by a native deko3d renderer from the game's
 
 Status: **0.8.0** — playable with the CPU overclocked (~25 fps; 20-25 in fights); every shader of the game, read from
 the card on demand. Slow at stock clocks: the game thread is the limit. What it took: [gow2/PORTING.md](gow2/PORTING.md).
+## Performance (0.8.0, measured on a console)
+
+**Playable, but heavy: the yellow zone.** The level 1 garden and level 2 (Assault) were played on 2026-10-22, with the
+console handheld and the profiler's stack sampler off.
+
+| Clocks (sys-clk) | Frame rate | Feel |
+| --- | --- | --- |
+| CPU 1785 MHz, GPU 614.4 MHz, RAM 1600 MHz | **24.2 fps on average** (68 windows of 10 s, from 15.5 to 30.1); 28-30 when quiet; 19-24 in fights; 15-18 while the next part of the level streams in | Playable, but heavy |
+| CPU 1785 MHz, GPU 768 MHz, RAM 1600 MHz | ~25 fps on average (measured with the sampler on, which costs ~8 %) | About the same: the GPU is not the limit most of the time |
+| Stock: CPU 1020 MHz, GPU 307.2 MHz, RAM 1331.2 MHz | 12-17 fps | A slide show |
+
+Overclocking the CPU is what matters: the game thread (Unreal's main loop and UnrealScript) is 80-90 % busy in fights
+and the rest wait for it. The GPU takes 25-38 ms per frame at 614 MHz. Over the run the SoC stayed between 33 and
+43 °C. The shaders read from the card cost ~2.2 ms each the first time they are used; loading the library index
+takes 4.8 s at startup. Details: [gow2/PORTING.md](gow2/PORTING.md).
+
 Installation: [INSTALL.md](INSTALL.md). Plan and porting notes: [gow2/PORTING.md](gow2/PORTING.md).
 
 ## Layout
