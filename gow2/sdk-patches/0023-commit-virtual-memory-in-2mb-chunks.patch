@@ -1,0 +1,17 @@
+--- a/src/core/guest_memory_switch.cpp	2026-10-22 13:03:11
++++ b/src/core/guest_memory_switch.cpp	2026-10-22 13:03:11
+@@ -493,7 +493,13 @@
+     constexpr size_t kFisicaIni = 0x100000000ull;
+     constexpr size_t kFisicaFin = 0x120000000ull;
+     const bool fisica = offset >= kFisicaIni && offset < kFisicaFin;
+-    const size_t granule = fisica ? 0x400000 : 0x10000;
++    /*
++     * Gears of War 2 commits its virtual heaps 56-64 KB at a time (4,673 VirtualAllocs, 603 MB, by the first
++     * level) and ran out of blocks at 495 MB backed: "no se pudo confirmar 0x10000 bytes ... Fallo 0x0000CE01".
++     * Virtual memory is therefore committed in 2 MB chunks as well, 2 MB aligned, which also lets the kernel use
++     * block descriptors for them (kBlockSize).
++     */
++    const size_t granule = fisica ? 0x400000 : kBlockSize;
+     const size_t limit = fisica ? kFisicaFin : SIZE_MAX;
+     const size_t begin = AlignDown(offset, granule);
+     const size_t end   = std::min(AlignUp(offset + length, granule), limit);
