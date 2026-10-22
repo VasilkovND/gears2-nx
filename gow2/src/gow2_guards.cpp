@@ -61,14 +61,19 @@ void Report(uint8_t* base, const char* walk, uint32_t object, int depth) {
 // The object out of its own attachment array (moving the rest down): every walk of that array loops otherwise.
 // Its field +64 (a Kismet sequence's ParentSequence, by the class the log names: Main_Sequence of class Sequence)
 // pointing at itself is cleared too: a root sequence has no parent, and loops that climb parents never end otherwise.
-void Untangle(uint8_t* base, uint32_t object) {
+void ClearSelfParent(uint8_t* base, uint32_t object) {
   if (REX_LOAD_U32(object + 64) == object) {
     REX_STORE_U32(object + 64, 0);
     REXLOG_WARN("[guard] {} at {:08X} was its own parent (+64): cleared", NameOf(base, object), object);
   }
+}
+
+// Only for sub_8255E4A8's objects (the attachment array is theirs: other classes hold anything at +236).
+void Untangle(uint8_t* base, uint32_t object) {
+  ClearSelfParent(base, object);
   const uint32_t data = REX_LOAD_U32(object + 236);
   uint32_t count = REX_LOAD_U32(object + 240);
-  if (!data || count > 4096) return;
+  if (data < 0x40000000u || data >= 0xA0000000u || count > 4096) return;
   for (uint32_t i = 0; i < count;) {
     if (REX_LOAD_U32(data + i * 4) == object) {
       for (uint32_t j = i + 1; j < count; ++j) REX_STORE_U32(data + (j - 1) * 4, REX_LOAD_U32(data + j * 4));
@@ -97,7 +102,7 @@ REX_HOOK_RAW(sub_8255E4A8) {
 
 REX_EXTERN(__imp__sub_8255A5C0);
 REX_HOOK_RAW(sub_8255A5C0) {
-  Untangle(base, ctx.r3.u32);
+  ClearSelfParent(base, ctx.r3.u32);
   if (t_chain_depth >= kMaxDepth) {
     Report(base, "+64 chain", ctx.r3.u32, t_chain_depth);
     ctx.r3.u64 = 0;  // what the function answers at the end of a chain
