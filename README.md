@@ -11,7 +11,8 @@ a homebrew NRO, and frames are drawn by a native deko3d renderer from the game's
 > You need your own copy of the game (the retail disc; no title update). This repository contains no game data or
 > game code: the code, the shaders and the NRO are all made on your computer from your copy.
 
-Status: **0.1.0, in development** — first NRO built from the Europe disc; not tested on a console yet.
+Status: **0.8.0** — playable with the CPU overclocked (~25 fps; 20-25 in fights); every shader of the game, read from
+the card on demand. Slow at stock clocks: the game thread is the limit. What it took: [gow2/PORTING.md](gow2/PORTING.md).
 Installation: [INSTALL.md](INSTALL.md). Plan and porting notes: [gow2/PORTING.md](gow2/PORTING.md).
 
 ## Layout

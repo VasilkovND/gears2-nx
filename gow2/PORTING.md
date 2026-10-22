@@ -4,7 +4,146 @@ Gears of War 2 (Xbox 360, retail disc) on the Nintendo Switch, as a homebrew NRO
 carries over from Dead Space 2 ([ds2-nx](https://github.com/VasilkovND/ds2-nx), `deadspace2/PORTING.md`) and Dante's
 Inferno, and every problem met on the way.
 
-## Status (0.1.0)
+## Status (0.8.0)
+
+Playable on a console with the CPU overclocked (1785 MHz CPU, 768 MHz GPU): ~25 fps on average, 20-25 in fights, the
+game's own 30 fps cap in quiet places. At stock clocks (1020 MHz) it is a slide show: the game thread alone needs more
+than a frame. Levels 1 and 2 played through; every one of the game's 35,953 shaders is in the library.
+
+| Area | State |
+| --- | --- |
+| Rendering | Levels 1-2 correct except: level 2's tree vertex shader skipped (`gow2_saltar_vs_rotos`), some distortion black |
+| Shaders | 35,953 (1,402 VS, 34,551 PS) from every package; 392 MB library + 833 MB DKSH cache (300,130 variants), both read from the card on demand |
+| Speed | Game thread bound (UnrealScript interpreter); GPU 25-38 ms per frame at 768 MHz |
+| Language | Russian (`user_language = 12`) |
+
+## What it took (0.8.0)
+
+Every item names its switch (a `gow2.toml` cvar) and its code; SDK changes are the patches in `gow2/sdk-patches/`.
+
+### Crashes and hangs
+
+- **Unbounded recursion**: objects that point at themselves (Kismet's `Main_Sequence` in a checkpoint written by an
+  early build listed itself as child and parent). A generic guard in every recompiled function's prologue
+  (`make_nx_pch.py` point 5) returns at once when the guest stack is within 32 KB of its limit (KPCR + 0x74);
+  `gow2_guards.cpp` logs where the chain was cut. The broken checkpoint itself has to be deleted.
+- **Kernel memory blocks exhausted**: commits in 2 MB granules (SDK 0023).
+- **Logger reading an unmapped address**: the main-thread logger checks protection first.
+- **GPU hang after small resolves**: logged by SDK 0024/0027.
+
+### The black world
+
+Four separate causes, found with the skip modes (ZL+ZR+Right) and frame dumps (ZL+ZR+Left):
+
+1. **EDRAM format aliases**: the game resolves a format-12 surface as 3 and 10 as 2 over the same EDRAM; the renderer
+   kept them apart (SDK 0025 aliases them).
+2. **Depth prepass mismatch**: the scene draws a depth-only prepass with one vertex shader and the base pass with
+   another, testing `GEQUAL`. Separately translated shaders do not give bit-identical depth, so the base pass lost most
+   of its pixels. A depth bias (SDK 0029) was not enough; `gow2_sin_prepaso_z` skips the prepass and the base pass
+   writes its own depth (same image, less GPU).
+3. **Far value per depth buffer**: shadow maps are cleared to 0, the scene (reversed Z) to 1; emulated clears now track
+   the direction per buffer (base, format, pitch: `DepthKey`).
+4. **Stencil-only clears** (SDK 0030) and depth fills drawn as clears.
+
+### Overexposure, black characters, ghosting, flat surfaces
+
+- **7e3 scene and exponent bias**: the scene is kept ×8 in EDRAM (`copy_dest_exp_bias`), resolved with -3, lights with
+  -5 (SDK 0036); 7e3 values clamped (SDK 0035).
+- **Black hero and black ghosting**: the ambient occlusion buffer is cleared through the depth path with raw EDRAM bits
+  (depth24 << 8 | stencil, e.g. 0x00003C00); the colour clear now uses those bits (SDK 0040). Five render targets share
+  one EDRAM base each frame (`kOtrasPorBase` = 8).
+- **Level 2 flat brown surfaces**: textures whose first mip was still all zero when uploaded are checked again every
+  frame, and samplers apply the fetch constant's LOD bias (SDK 0041).
+
+### Level 2's giant triangles
+
+The search modes (each press skips one vertex shader of the scene's depth-writing draws, with a capture) found one
+shader: `38234053372F8F2F`, the trees. It picks its matrices from the float constants by an index it computes from a
+per-vertex value: `a0 = ((r1.x + c10.x) mod 3) * 4`, then `c11..c14 + a0`. 198 vertex shaders have that pattern;
+characters use relative constant reads too and are fine. The shader is skipped (`gow2_saltar_vs_rotos`) and its
+inputs (fetch constants, c10-c26, the first vertices of the index stream) are logged as `[gpu] skin VS` for the real
+fix.
+
+### Shaders
+
+- **Unreal does not create shaders through Direct3D**: only 7 shader objects are ever created; the rest are loaded
+  straight from the packages. Draws are matched to the library by their microcode (`Biblioteca::Identificar`:
+  by address, learned patched microcode, then candidates by length with the fetches masked).
+- **Fetches at a rewritten r0.x**: some vertex shaders compute r0.x before a vertex fetch that uses it (occlusion
+  boxes, trees). XenosRecomp marks those elements as fetched by the shader itself and says which in specialization
+  constant 1 (`g_ManualesR0`); the loader reads it from the SPIR-V. SDK 0044 lets other specialization constants keep
+  their value in the GLSL pass (constant 1 at first made every such shader fail: black screen).
+- **A package with an undecodable LZX chunk**: `SP_Hospital_03.xxx` (the garden) has a chunk the offline extractor
+  cannot decode on this disc; the whole package used to be dropped, and with it the garden ground's shaders (the ground
+  was the clear colour, dark red). The extractor keeps what decodes and goes on.
+- **Every shader, on demand**: 35,953 shaders do not fit in memory (392 MB of SPIR-V + 833 MB of DKSH). The library
+  loads only its containers (needed to identify the microcode) and reads a shader's SPIR-V from the card the first time
+  it is used (`gow2_shaders_por_demanda`, `BibliotecaShaders::CargarIndice`/`LeerSpirv`); the DKSH cache loads only
+  its entry table and reads an entry when first asked for (`CacheDksh::CargarIndice`, SDK 0045). Limits raised to
+  2 GB / 2^20 entries.
+
+### Occlusion queries
+
+Direct3D's query is a 64-byte block: the begin structure at +0x20 and the end one at +0, marked `0xFFFFFEED` on
+`Issue(END)`; `GetData` answers "not yet" while the mark is there and Unreal's rendering thread polls it in a loop.
+The renderer reports the GPU's samples-passed counter at each begin and end (`EmpezarOclusion` /
+`TerminarOclusionAsincrona`), the ring thread writes the count back once that work's fence has passed
+(`OcclusionPoll`), and the query boxes draw (they needed the r0.x fetches above). Waiting for the GPU stalled the
+frame, so when the game waits (`g_gow2_query_waited`, set by the `GetData` hook) queries older than
+`gow2_oclusion_sin_esperar_ms` are answered visible at once; a query of the work still being recorded makes that
+work submitted (`EnviarOclusiones`). About half of the tested objects come back hidden.
+
+### Speed
+
+GPU and ring:
+- Partial submits every 256 draws (SDK 0039): the GPU was idle until the frame closed.
+- The ring thread is woken only when asleep, and gives the read pointer back every 256 words inside a batch: Direct3D
+  waits for ring space on it.
+- No full barrier for descriptor-only writes (SDK 0042); xxHash inlined (SDK 0037).
+
+CPU, native code (`gow2_perf_hooks.cpp`, each behind a cvar):
+- The game's spin waits sleep 100 µs instead of spinning (GPU progress, query `GetData`, XMA).
+- XMemDecompress with libmspack (`gow2_lzx_nativo`), the audio filter and the ramped mix (NEON).
+- memcpy, memset, TMap find by FName, bone quaternion to matrix (`gow2_cpu_nativo`; the matrix with single-precision
+  steps and no fused multiply-adds, so the bits are the same).
+
+CPU, generated code (passes run by `codegen.sh` after the PC port's):
+- `patch_leaf_prologue.py`: functions that call nothing (9,304 of 48,830) get the prologue without the stack guard.
+- `patch_stack_access.py`: guest stack (r1) accesses without `volatile` (348,442): the stack is one thread's, so the
+  compiler may keep spilled locals in registers.
+- `patch_inline_calls.py`: the register save/restore helpers (`__savegprlr_N` ... a fifth of all calls, 43,209) get
+  always-inline copies in every file; same-file calls to functions no hook replaces call the body directly, so GCC may
+  inline them. The hooked functions are read from the sources and are part of the codegen inputs: a new hook
+  regenerates the code.
+
+What limits it now: the game thread (Unreal's main loop and UnrealScript interpreter) is 85-93 % busy in fights, with a
+flat profile (no function above ~6 %); the hottest ones (TMap find, the actor iterator) are bound by cache misses, not
+instructions. The render thread and the GPU wait for it. Measure without the stack sampler (ZL+ZR+R): it pauses every
+thread every millisecond and costs ~8 %. A 60 Hz panel cannot pace 25 fps evenly (frames alternate 33/50 ms); 30 or 20
+can.
+
+### Diagnostics
+
+| Shortcut / switch | What it gives |
+| --- | --- |
+| ZL+ZR+Up | FPS overlay |
+| ZL+ZR+Down | Capture to `capturas/` |
+| ZL+ZR+Left | Full trace of the next frame (every draw: state, vertex fetches, every sampler's fetch words, pixel constants c0-c15), dump of every resolved texture (`volcado_NN/`), then a probe frame (`gow2_sonda` = "x,y": every base-pass draw drawn only into that 8x8 square, the GPU counts its pixels: `[probe] the one that shows`) |
+| ZL+ZR+Right | Search modes (direct with `gow2_busqueda_directa`): each press skips one shader and takes a capture; pixel shaders of the base pass ranked by vertices (`gow2_busqueda_ps`) or vertex shaders writing the scene's depth |
+| ZL+ZR+R | Stack sampler on/off (`logs/rex/rex_perfil.log`) |
+| `[esperas]` | Every 10 s: time the game slept waiting for the GPU, queries and audio, GPU waits by call site |
+| `[gpu] occlusion` | Queries counted, hidden, answered without waiting |
+| `gow2/out/elf/<nro hash>.elf` | The ELF of every NRO built, to symbolize a profile (`addr2line`) |
+
+### Open
+
+- The trees' computed matrix index (`[gpu] skin VS` lines from level 2 will show what it reads).
+- Distortion copies black (format 10 vs 3 images at EDRAM 2D0).
+- The game thread: more native functions, or less work per frame.
+
+## History (0.1.0)
+
+### Status (0.1.0)
 
 First NRO built from the game (Europe disc), not run on a console yet.
 
