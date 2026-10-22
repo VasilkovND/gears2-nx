@@ -405,13 +405,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       registers_[r] = value;  // no side effects through MMIO (graphics_system.cpp)
     }
     if (r == kRegCpRbWptr) {
-      write_pointer_.store(value, std::memory_order_release);
-      // Taking the lock for an instant avoids losing the wakeup if the ring thread is between checking
-      // and going to sleep.
-      {
-        std::lock_guard<std::mutex> lock(ring_mutex_);
+      write_pointer_.store(value, std::memory_order_seq_cst);
+      // Only a sleeping ring thread needs the lock and the notify (each KickOff paid both, 3-5 % of the rendering
+      // thread). seq_cst pairs with ring_dormido_ in RingLoop: either the ring's check sees this write pointer, or this
+      // load sees it asleep and wakes it; taking the lock for an instant keeps the wakeup from being lost.
+      if (ring_dormido_.load(std::memory_order_seq_cst)) {
+        {
+          std::lock_guard<std::mutex> lock(ring_mutex_);
+        }
+        ring_cv_.notify_one();
       }
-      ring_cv_.notify_one();
     }
   }
 
@@ -540,11 +543,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     while (active_.load(std::memory_order_acquire)) {
       {
         std::unique_lock<std::mutex> lock(ring_mutex_);
+        ring_dormido_.store(true, std::memory_order_seq_cst);
         ring_cv_.wait_for(lock, std::chrono::milliseconds(4), [&] {
           return !active_.load(std::memory_order_acquire) ||
-                 write_pointer_.load(std::memory_order_acquire) != read ||
+                 write_pointer_.load(std::memory_order_seq_cst) != read ||
                  ring_generation_.load(std::memory_order_acquire) != generation;
         });
+        ring_dormido_.store(false, std::memory_order_relaxed);
       }
       if (!active_.load(std::memory_order_acquire)) {
         break;
@@ -569,9 +574,18 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       reader.mask = words - 1;
       reader.pos = read;
       reader.end = written;
+      // The read pointer goes back to the game during a batch too, every kRptrPaso words, as the real command
+      // processor does: Direct3D waits for ring space on it (sub_8298C2A0), and a whole batch (with its WAIT_REG_MEMs)
+      // used to pass before any space came back. What is behind reader.pos has been read already.
+      const uint32_t writeback_lote = read_pointer_writeback_.load(std::memory_order_acquire);
+      uint32_t publicado = read;
       while (reader.Pending()) {
         if (!Packet(reader, 0)) {
           break;  // partial packet: the rest comes with the next CP_RB_WPTR
+        }
+        if (writeback_lote && ((reader.pos - publicado) & reader.mask) >= kRptrPaso) {
+          rex::memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(writeback_lote), reader.pos);
+          publicado = reader.pos;
         }
       }
       read = reader.pos;
@@ -2041,6 +2055,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::atomic<uint64_t> vblanks_{0};
   std::mutex ring_mutex_;
   std::condition_variable ring_cv_;
+  std::atomic<bool> ring_dormido_{false};  // the ring thread is (about to be) waiting on ring_cv_
+  static constexpr uint32_t kRptrPaso = 256;  // words between the read pointer writebacks inside a batch
   rex::system::object_ref<rex::system::XHostThread> ring_thread_;
   rex::system::object_ref<rex::system::XHostThread> vblank_thread_;
 

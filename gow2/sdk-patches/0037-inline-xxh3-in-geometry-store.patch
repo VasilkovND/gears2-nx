@@ -1,0 +1,13 @@
+diff -ru a/src/x360/deko/geometria.cpp b/src/x360/deko/geometria.cpp
+--- a/src/x360/deko/geometria.cpp	2026-10-22 16:24:47
++++ b/src/x360/deko/geometria.cpp	2026-10-22 16:24:47
+@@ -2,6 +2,9 @@
+ 
+ #include <rex/x360/deko/geometria.h>
+ 
++// The fingerprints of every vertex range, 64-byte line by line (1.4-1.9 MB a frame in Gears of War 2): XXH3 inlined
++// here instead of a call per line (the profile had it at 9 % of the GPU ring thread). Same hash values.
++#define XXH_INLINE_ALL
+ #include <xxhash.h>
+ 
+ #include <algorithm>
