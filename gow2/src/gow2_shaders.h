@@ -66,6 +66,12 @@ class Biblioteca {
   Estadisticas estadisticas() const;
 
  private:
+  const rex::x360::EntradaShader* IdentificarEntrada(bool vertices, uint32_t fisica,
+                                                     std::span<const uint32_t> microcodigo);
+  // With the library loaded as an index (every shader): reads the entry's SPIR-V from the card the first time it is
+  // handed out and fills what comes from it (samplers' types, kills, manual fetches).
+  void Completar(const rex::x360::EntradaShader* entrada) const;
+
   struct Datos;
   std::unique_ptr<Datos> datos_;
 };

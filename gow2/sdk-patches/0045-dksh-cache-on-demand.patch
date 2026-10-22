@@ -1,0 +1,184 @@
+diff -ruN a/include/rex/ui/deko3d/cache_dksh.h b/include/rex/ui/deko3d/cache_dksh.h
+--- a/include/rex/ui/deko3d/cache_dksh.h	2026-10-22 20:02:10
++++ b/include/rex/ui/deko3d/cache_dksh.h	2026-10-22 20:05:43
+@@ -21,7 +21,10 @@
+ 
+ #include <compare>
+ #include <cstdint>
++#include <cstdio>
++#include <filesystem>
+ #include <map>
++#include <mutex>
+ #include <span>
+ #include <string>
+ #include <utility>
+@@ -40,6 +43,10 @@
+   // Replaces the content with the file's. false (and empty) if it is not a cache of this compiler or is damaged;
+   // `motivo` says why, to log it.
+   bool Cargar(std::span<const uint8_t> archivo, std::string& motivo);
++  // Only the entry table (Gears of War 2 with every shader: ~800 MB of DKSH): Buscar reads an entry from the file the
++  // first time it is asked for. The entries already here (Anadir) stay and win. No integrity hash over the file
++  // (it would read all of it): an entry is checked by its size and DKSH header when read.
++  bool CargarIndice(const std::filesystem::path& ruta, std::string& motivo);
+   std::vector<uint8_t> Serializar() const;
+ 
+   struct Clave {
+@@ -51,13 +58,29 @@
+   // nullptr if it is not there. Valid until the next Anadir or Cargar.
+   const std::vector<uint8_t>* Buscar(const Clave& clave) const;
+   void Anadir(const Clave& clave, std::vector<uint8_t> dksh);
+-  size_t size() const { return entradas_.size(); }
++  size_t size() const { return entradas_.size() + indice_.size(); }
+   const std::map<Clave, std::vector<uint8_t>>& entradas() const { return entradas_; }
+   // Takes the entries out (the cache is left empty): merging a large cache into another without copying it.
+   std::map<Clave, std::vector<uint8_t>> Extraer() { return std::move(entradas_); }
+ 
+  private:
+-  std::map<Clave, std::vector<uint8_t>> entradas_;
++  // mutable: Buscar moves an entry of the file (CargarIndice) here when it is first asked for.
++  mutable std::map<Clave, std::vector<uint8_t>> entradas_;
++  struct EnArchivo {
++    Clave clave;
++    uint64_t posicion = 0;
++    uint32_t bytes = 0;
++  };
++  std::vector<EnArchivo> indice_;  // sorted by clave
++  std::filesystem::path ruta_;
++  mutable std::FILE* archivo_ = nullptr;
++  mutable std::mutex mutex_;
++
++ public:
++  CacheDksh() = default;
++  CacheDksh(const CacheDksh&) = delete;
++  CacheDksh& operator=(const CacheDksh&) = delete;
++  ~CacheDksh();
+ };
+ 
+ }  // namespace rex::deko3d
+diff -ruN a/src/ui/deko3d/cache_dksh.cpp b/src/ui/deko3d/cache_dksh.cpp
+--- a/src/ui/deko3d/cache_dksh.cpp	2026-10-22 20:02:10
++++ b/src/ui/deko3d/cache_dksh.cpp	2026-10-22 20:05:43
+@@ -4,6 +4,7 @@
+ 
+ #include <rex/ui/deko3d/glsl.h>
+ 
++#include <algorithm>
+ #include <cstring>
+ // The same xxHash setup as nfsmw_shader_library.cpp (reads through memcpy: see the note there).
+ #if defined(XXH_IMPLEM_13a8737387)
+@@ -22,7 +23,7 @@
+ constexpr size_t kCabecera = 32;
+ constexpr size_t kEntrada = 24;
+ // Gears of War 2 ships ~100,000 variants (10,000+ shaders, nine pixel shader variants each).
+-constexpr uint32_t kMaxEntradas = 1u << 18;
++constexpr uint32_t kMaxEntradas = 1u << 20;  // Gears of War 2, every shader: ~220,000 variants
+ constexpr uint32_t kMaxDksh = 1u << 20;
+ 
+ uint32_t U32(const uint8_t* p) {
+@@ -117,12 +118,78 @@
+   return d;
+ }
+ 
++CacheDksh::~CacheDksh() {
++  if (archivo_) std::fclose(archivo_);
++}
++
++bool CacheDksh::CargarIndice(const std::filesystem::path& ruta, std::string& motivo) {
++  std::FILE* f = std::fopen(ruta.string().c_str(), "rb");
++  if (!f) {
++    motivo = "no se puede abrir";
++    return false;
++  }
++  uint8_t cabecera[kCabecera];
++  if (std::fread(cabecera, 1, kCabecera, f) != kCabecera || U32(cabecera) != kMagia) {
++    std::fclose(f);
++    motivo = "no es una cache de DKSH";
++    return false;
++  }
++  if (U32(cabecera + 4) != kVersion || U64(cabecera + 8) != HuellaId()) {
++    std::fclose(f);
++    motivo = U32(cabecera + 4) != kVersion ? "otra version del formato"
++                                           : "hecha por otro compilador (se espera: " + IdCompilador() + ")";
++    return false;
++  }
++  const uint32_t n = U32(cabecera + 16);
++  std::vector<uint8_t> tabla(size_t(n) * kEntrada);
++  if (n > kMaxEntradas || std::fread(tabla.data(), 1, tabla.size(), f) != tabla.size()) {
++    std::fclose(f);
++    motivo = "danada";
++    return false;
++  }
++  std::vector<EnArchivo> indice;
++  indice.reserve(n);
++  uint64_t datos = kCabecera + uint64_t(n) * kEntrada;
++  for (uint32_t i = 0; i < n; ++i) {
++    const uint8_t* e = tabla.data() + size_t(i) * kEntrada;
++    const uint32_t bytes = U32(e + 16);
++    if (bytes > kMaxDksh) {
++      std::fclose(f);
++      motivo = "danada";
++      return false;
++    }
++    indice.push_back({{U64(e), U32(e + 8), U32(e + 12)}, datos, bytes});
++    datos = (datos + bytes + 3) & ~uint64_t(3);
++  }
++  std::sort(indice.begin(), indice.end(), [](const EnArchivo& a, const EnArchivo& b) { return a.clave < b.clave; });
++  std::lock_guard<std::mutex> lock(mutex_);
++  if (archivo_) std::fclose(archivo_);
++  archivo_ = f;
++  ruta_ = ruta;
++  indice_ = std::move(indice);
++  return true;
++}
++
+ const std::vector<uint8_t>* CacheDksh::Buscar(const Clave& clave) const {
+-  const auto it = entradas_.find(clave);
+-  return it == entradas_.end() ? nullptr : &it->second;
++  std::lock_guard<std::mutex> lock(mutex_);
++  if (const auto it = entradas_.find(clave); it != entradas_.end()) {
++    return &it->second;
++  }
++  const auto it = std::lower_bound(indice_.begin(), indice_.end(), clave,
++                                   [](const EnArchivo& a, const Clave& c) { return a.clave < c; });
++  if (it == indice_.end() || it->clave != clave || !archivo_) {
++    return nullptr;
++  }
++  std::vector<uint8_t> dksh(it->bytes);
++  if (std::fseek(archivo_, long(it->posicion), SEEK_SET) != 0 ||
++      std::fread(dksh.data(), 1, dksh.size(), archivo_) != dksh.size()) {
++    return nullptr;
++  }
++  return &entradas_.emplace(clave, std::move(dksh)).first->second;
+ }
+ 
+ void CacheDksh::Anadir(const Clave& clave, std::vector<uint8_t> dksh) {
++  std::lock_guard<std::mutex> lock(mutex_);
+   entradas_[clave] = std::move(dksh);
+ }
+ 
+diff -ruN a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 20:02:10
++++ b/src/x360/deko/destinos.cpp	2026-10-22 20:05:43
+@@ -449,8 +449,20 @@
+   // NRO (shaders/build_library.sh), merged. Loading only the first, a library rebuilt on the PC had none of its new or
+   // changed shaders: each one was compiled on the console when first drawn, 4-9 s each for Dead Space 2's particles.
+   std::string motivo;
+-  for (const std::filesystem::path& ruta :
+-       {RutaCache(), rex::filesystem::GetExecutableFolder() / "shadercache_dksh.bin"}) {
++  // The PC tool's cache with every shader of the game (~800 MB): only its entry table is read, each DKSH comes from
++  // the card the first time it is needed (CacheDksh::CargarIndice). The console's own (small) is loaded and wins.
++  const std::filesystem::path de_la_biblioteca = rex::filesystem::GetExecutableFolder() / "shadercache_dksh.bin";
++  for (const std::filesystem::path& ruta : {RutaCache(), de_la_biblioteca}) {
++    if (ruta == de_la_biblioteca) {
++      const uint64_t inicio_ns = deko::AhoraNs();
++      if (cache_.CargarIndice(ruta, motivo)) {
++        REXLOG_INFO("[deko3d] cache de DKSH {}: indice de {} entradas en {:.1f} s (cada una se lee al usarse)",
++                    ruta.string(), cache_.size(), double(deko::AhoraNs() - inicio_ns) / 1e9);
++      } else {
++        REXLOG_WARN("[deko3d] cache de DKSH {} no se usa: {}", ruta.string(), motivo);
++      }
++      continue;
++    }
+     std::ifstream f(ruta, std::ios::binary | std::ios::ate);
+     if (!f) {
+       continue;

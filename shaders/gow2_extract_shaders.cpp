@@ -178,14 +178,26 @@ bool ExpandChunked(const uint8_t* d, size_t n, std::vector<uint8_t>& out, bool& 
   if (total > (1u << 30)) return false;
   out.assign(total, 0);
   std::memcpy(out.data(), d, std::min<size_t>(chunks[0].uo, n));
+  // A chunk that does not decode (SP_Hospital_03's chunk 20 on some copies) keeps what decoded before the error and
+  // the rest of the package goes on: the garden's shaders are in its other chunks (the whole file used to be dropped).
   std::vector<uint8_t> part;
-  for (const auto& c : chunks) {
-    if (size_t(c.co) + c.cs > n) return false;
+  size_t good = 0, failed = 0;
+  for (size_t i = 0; i < chunks.size(); ++i) {
+    const auto& c = chunks[i];
+    if (size_t(c.co) + c.cs > n) {
+      ++failed;
+      continue;
+    }
     part.clear();
-    if (!Expand(d + c.co, c.cs, part) || part.size() != c.us) return false;
-    std::memcpy(out.data() + c.uo, part.data(), c.us);
+    if (Expand(d + c.co, c.cs, part) && part.size() == c.us) {
+      ++good;
+    } else {
+      ++failed;
+      std::fprintf(stderr, "  chunk %zu of %zu does not decode: kept what decoded, the rest goes on\n", i, chunks.size());
+    }
+    std::memcpy(out.data() + c.uo, part.data(), std::min<size_t>(part.size(), c.us));
   }
-  return true;
+  return good > 0;
 }
 
 struct Stats {

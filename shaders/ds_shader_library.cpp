@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
 /*
  * xxHash reads with memcpy (XXH_FORCE_MEMORY_ACCESS 0). With the method it picks for GCC (1) it reads
@@ -22,7 +24,7 @@
 namespace ds {
 namespace {
 constexpr std::array<uint8_t, 8> kFirma{'D','S','2','S','P','V',0,0};
-constexpr size_t kMaxArchivo = 512 * 1024 * 1024;  // Gears of War 2: 10,000+ shaders per set
+constexpr size_t kMaxArchivo = size_t(2) << 30;  // Gears of War 2: all 35,886 shaders are ~470 MB
 constexpr size_t kMaxShaders = 65536;
 constexpr size_t kMaxOriginal = 64 * 1024;
 constexpr size_t kMaxSpirv = 4 * 1024 * 1024;
@@ -146,6 +148,92 @@ void BibliotecaShaders::Cargar(const std::filesystem::path& archivo) {
   f.seekg(0);
   Exigir(bool(f.read(reinterpret_cast<char*>(datos.data()), datos.size())), "Lectura incompleta del paquete");
   Cargar(datos);
+}
+
+void BibliotecaShaders::CargarIndice(const std::filesystem::path& archivo) {
+  std::FILE* f = std::fopen(archivo.string().c_str(), "rb");
+  Exigir(f != nullptr, "No se pudo abrir el paquete de shaders");
+  struct Cerrar {
+    std::FILE* f;
+    ~Cerrar() { std::fclose(f); }
+  } cerrar{f};
+  std::vector<char> bufer(1 << 20);  // forward seeks inside it do not touch the card
+  std::setvbuf(f, bufer.data(), _IOFBF, bufer.size());
+  auto leer = [&](void* destino, size_t n) { Exigir(std::fread(destino, 1, n, f) == n, "Paquete de shaders truncado"); };
+  auto u32 = [&] {
+    uint8_t b[4];
+    leer(b, 4);
+    return Lector{b}.U32();
+  };
+  uint8_t cabecera[24];
+  leer(cabecera, sizeof(cabecera));
+  Lector l{cabecera};
+  auto firma = l.Tomar(8);
+  Exigir(std::equal(firma.begin(), firma.end(), kFirma.begin()), "Firma de paquete desconocida");
+  Exigir(l.U32() == 1, "Version de paquete no admitida");
+  const uint32_t cantidad = l.U32();
+  Exigir(cantidad && cantidad <= kMaxShaders, "Cantidad de shaders fuera de limites");
+  uint64_t posicion = sizeof(cabecera);
+  std::vector<Shader> nuevos;
+  nuevos.reserve(cantidad);
+  for (uint32_t i = 0; i < cantidad; ++i) {
+    const uint32_t original = u32(), palabras = u32();
+    uint8_t h[8];
+    leer(h, 8);
+    const uint64_t esperada = Lector{h}.U64();
+    Exigir(original >= 24 && original <= kMaxOriginal && palabras >= 5 && palabras <= kMaxSpirv / 4,
+           "Entrada demasiado grande");
+    Shader s;
+    s.original.resize(original);
+    leer(s.original.data(), original);
+    s.spirv_posicion = posicion + 16 + original;
+    s.spirv_palabras = palabras;
+    posicion = s.spirv_posicion + uint64_t(palabras) * 4;
+    Exigir(std::fseek(f, long(posicion), SEEK_SET) == 0, "Paquete de shaders truncado");
+    s.vertices = (BE(s.original.data()) & 1) != 0;
+    s.huella = XXH3_64bits(s.original.data(), s.original.size());
+    Exigir((BE(s.original.data()) & ~1u) == 0x102A1100, "Firma de contenedor desconocida");
+    Exigir(s.huella == esperada, "Huella de contenedor incorrecta");
+    if (!nuevos.empty()) Exigir(Menor(nuevos.back(), s), "Entradas repetidas o desordenadas");
+    nuevos.push_back(std::move(s));
+  }
+  shaders_ = std::move(nuevos);
+  ruta_ = archivo;
+}
+
+std::vector<uint32_t> BibliotecaShaders::LeerSpirv(size_t i) const {
+  if (i >= shaders_.size() || ruta_.empty()) return {};
+  const Shader& s = shaders_[i];
+  // One file kept open for every read (the ring thread asks for them one at a time).
+  static std::mutex mutex;
+  static std::FILE* f = nullptr;
+  static std::filesystem::path abierto;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!f || abierto != ruta_) {
+    if (f) std::fclose(f);
+    f = std::fopen(ruta_.string().c_str(), "rb");
+    abierto = ruta_;
+    if (!f) return {};
+  }
+  std::vector<uint32_t> spirv(s.spirv_palabras);
+  if (std::fseek(f, long(s.spirv_posicion), SEEK_SET) != 0 ||
+      std::fread(spirv.data(), 4, spirv.size(), f) != spirv.size()) {
+    return {};
+  }
+  // Little-endian words in the file, as Cargar reads them.
+  for (uint32_t& w : spirv) {
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(&w);
+    w = uint32_t(b[0]) | uint32_t(b[1]) << 8 | uint32_t(b[2]) << 16 | uint32_t(b[3]) << 24;
+  }
+  Shader prueba;
+  prueba.original = s.original;
+  prueba.spirv = std::move(spirv);
+  try {
+    Validar(prueba);
+  } catch (const std::exception&) {
+    return {};
+  }
+  return std::move(prueba.spirv);
 }
 
 const Shader* BibliotecaShaders::Buscar(std::span<const uint8_t> original) const {

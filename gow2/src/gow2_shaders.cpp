@@ -10,6 +10,7 @@
 #include "ds_shader_library.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <map>
@@ -33,6 +34,11 @@
 
 REXCVAR_DEFINE_BOOL(gow2_volcar_desconocidos, true, "Gears2",
                     "Escribir el microcodigo de cada shader que no se identifica en shaders_unknown/ (hasta 2000)");
+
+REXCVAR_DEFINE_BOOL(gow2_shaders_por_demanda, true, "Gears2",
+                    "La biblioteca de shaders se carga como indice (solo los contenedores) y el SPIR-V de cada shader "
+                    "se lee de la tarjeta la primera vez que se usa: con todos los shaders del juego (~470 MB) no cabe "
+                    "en memoria. false = entera en memoria");
 
 namespace gow2::shaders {
 namespace {
@@ -264,6 +270,11 @@ uint64_t Huella(bool vertices, std::span<const uint32_t> microcodigo) {
 struct Biblioteca::Datos {
   ds::BibliotecaShaders biblioteca;
   std::vector<EntradaShader> entradas;
+  // CargarIndice: each entry's SPIR-V once read (Completar), and whether it was.
+  std::vector<std::vector<uint32_t>> spirv_leido;
+  std::vector<uint8_t> completa;
+  bool por_demanda = false;
+  uint64_t leidas = 0, leidas_ns = 0, fallidas = 0;
   std::unordered_map<const void*, uint32_t> por_shader;
   std::map<std::pair<bool, uint32_t>, std::vector<uint32_t>> candidatos;  // (vertices, words) -> entries
   bool cargada = false;
@@ -289,10 +300,41 @@ Biblioteca::~Biblioteca() = default;
 
 bool Biblioteca::cargada() const { return datos_->cargada; }
 
+namespace {
+// What comes from the SPIR-V (the container has no constant table): the samplers and their types, the elements a
+// vertex shader fetches itself, the pixel shader's kills.
+void DatosDelSpirv(const ds::Shader& shader, EntradaShader& e) {
+  if (e.samplers.empty() && shader.original.size() >= 20 && Contenedor{shader.original}.U32(16) == 0) {
+    SamplersDesdeSpirv(e.spirv, e.samplers);
+  }
+  // Elements fetched at an r0.x the shader rewrote (an index it computed, though the register is r0.x): read by the
+  // shader itself like those at other registers (the translator says which, spec constant 1).
+  if (e.vertices) {
+    if (const uint32_t manuales = ManualesR0DesdeSpirv(e.spirv)) {
+      for (size_t k = 0; k < e.elementos.size() && k < 32; ++k) {
+        if (manuales & (1u << k)) e.elementos[k].manual = true;
+      }
+    }
+  }
+  TiposDesdeSpirv(e.spirv, e.samplers);
+  if (!e.vertices) {
+    e.kills = ContarKills(e.spirv);
+    e.descarta = e.kills != 1;  // 1 = only the alpha test's
+  }
+}
+}  // namespace
+
 bool Biblioteca::Cargar(const std::filesystem::path& archivo) {
   Datos& d = *datos_;
+  const uint64_t inicio = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch()).count());
+  d.por_demanda = REXCVAR_GET(gow2_shaders_por_demanda);
   try {
-    d.biblioteca.Cargar(archivo);
+    if (d.por_demanda) {
+      d.biblioteca.CargarIndice(archivo);
+    } else {
+      d.biblioteca.Cargar(archivo);
+    }
   } catch (const std::exception& e) {
     REXLOG_WARN("[shaders] library not available ({}): {}", archivo.string(), e.what());
     return false;
@@ -311,25 +353,11 @@ bool Biblioteca::Cargar(const std::filesystem::path& archivo) {
       if (++ignorados <= 8) REXLOG_WARN("[shaders] container {} skipped: {}", i, motivo);
       continue;
     }
-    if (e.samplers.empty() && shaders[i].original.size() >= 20 && Contenedor{shaders[i].original}.U32(16) == 0) {
-      SamplersDesdeSpirv(e.spirv, e.samplers);
-    }
-    // Elements fetched at an r0.x the shader rewrote (an index it computed, though the register is r0.x): read by the
-    // shader itself like those at other registers (the translator says which, spec constant 1).
-    if (e.vertices) {
-      if (const uint32_t manuales = ManualesR0DesdeSpirv(e.spirv)) {
-        for (size_t k = 0; k < e.elementos.size() && k < 32; ++k) {
-          if (manuales & (1u << k)) e.elementos[k].manual = true;
-        }
-      }
-    }
-    TiposDesdeSpirv(e.spirv, e.samplers);
-    if (!e.vertices) {
-      e.kills = ContarKills(e.spirv);
-      e.descarta = e.kills != 1;  // 1 = only the alpha test's
-    }
+    if (!d.por_demanda) DatosDelSpirv(shaders[i], e);
     d.entradas.push_back(std::move(e));
   }
+  d.spirv_leido.assign(d.entradas.size(), {});
+  d.completa.assign(d.entradas.size(), d.por_demanda ? 0 : 1);
   for (uint32_t i = 0; i < d.entradas.size(); ++i) {
     const EntradaShader& e = d.entradas[i];
     d.candidatos[{e.vertices, uint32_t(e.microcodigo.size())}].push_back(i);
@@ -337,9 +365,40 @@ bool Biblioteca::Cargar(const std::filesystem::path& archivo) {
   }
   d.cargada = !d.entradas.empty();
   const size_t vs = std::count_if(d.entradas.begin(), d.entradas.end(), [](const auto& e) { return e.vertices; });
-  REXLOG_INFO("[shaders] library {}: {} shaders ({} VS, {} PS), {} skipped", archivo.string(), d.entradas.size(),
-              vs, d.entradas.size() - vs, ignorados);
+  const uint64_t fin = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch()).count());
+  REXLOG_INFO("[shaders] library {}: {} shaders ({} VS, {} PS), {} skipped, {} in {:.1f} s", archivo.string(),
+              d.entradas.size(), vs, d.entradas.size() - vs, ignorados,
+              d.por_demanda ? "index only (SPIR-V read from the card when first used)" : "all in memory",
+              double(fin - inicio) / 1e9);
   return d.cargada;
+}
+
+void Biblioteca::Completar(const EntradaShader* entrada) const {
+  Datos& d = *datos_;
+  if (!entrada || !d.por_demanda) return;
+  const size_t i = size_t(entrada - d.entradas.data());
+  if (i >= d.entradas.size() || d.completa[i]) return;
+  static std::mutex mutex;  // Identificar holds Datos::mutex, PorContenedor does not
+  std::lock_guard<std::mutex> lock(mutex);
+  if (d.completa[i]) return;
+  const auto inicio = std::chrono::steady_clock::now();
+  EntradaShader& e = d.entradas[i];
+  d.spirv_leido[i] = d.biblioteca.LeerSpirv(e.numero);
+  if (d.spirv_leido[i].empty()) {
+    if (d.fallidas++ < 8) REXLOG_WARN("[shaders] n{}: its SPIR-V could not be read from the library", e.numero);
+  } else {
+    e.spirv = d.spirv_leido[i];
+    DatosDelSpirv(*static_cast<const ds::Shader*>(e.juego), e);
+  }
+  d.leidas_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
+                                                                                inicio).count());
+  ++d.leidas;
+  if ((d.leidas & (d.leidas - 1)) == 0 && d.leidas >= 64) {
+    REXLOG_INFO("[shaders] {} shaders read from the card so far ({:.2f} ms each on average)", d.leidas,
+                double(d.leidas_ns) / 1e6 / double(d.leidas));
+  }
+  d.completa[i] = 1;
 }
 
 const EntradaShader* Biblioteca::PorContenedor(std::span<const uint8_t> contenedor) const {
@@ -348,7 +407,9 @@ const EntradaShader* Biblioteca::PorContenedor(std::span<const uint8_t> contened
   const ds::Shader* shader = d.biblioteca.Buscar(contenedor);
   if (!shader) return nullptr;
   const auto it = d.por_shader.find(shader);
-  return it != d.por_shader.end() ? &d.entradas[it->second] : nullptr;
+  const EntradaShader* e = it != d.por_shader.end() ? &d.entradas[it->second] : nullptr;
+  Completar(e);
+  return e;
 }
 
 void Biblioteca::RegistrarObjeto(rex::memory::Memory* memoria, uint32_t objeto, const EntradaShader* entrada) {
@@ -418,6 +479,13 @@ void Biblioteca::RegistrarObjeto(rex::memory::Memory* memoria, uint32_t objeto, 
 
 const EntradaShader* Biblioteca::Identificar(bool vertices, uint32_t fisica,
                                              std::span<const uint32_t> microcodigo) {
+  const EntradaShader* e = IdentificarEntrada(vertices, fisica, microcodigo);
+  Completar(e);
+  return e;
+}
+
+const EntradaShader* Biblioteca::IdentificarEntrada(bool vertices, uint32_t fisica,
+                                                    std::span<const uint32_t> microcodigo) {
   Datos& d = *datos_;
   if (!d.cargada) return nullptr;
   std::lock_guard<std::mutex> lock(d.mutex);
