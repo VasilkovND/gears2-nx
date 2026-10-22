@@ -1306,6 +1306,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         text += ")";
       }
     }
+    REXLOG_INFO("{}", text);
     // The first vertices the index buffer names: position (stream 31.2, float3) and the index/weights (31.1 +32), with
     // c0-c9 and c23-c26, to redo the shader's math on the PC.
     {
