@@ -26,6 +26,8 @@
 
 #include "gow2_gpu.h"
 
+void gow2_log_main_thread();  // src/gow2_guards.cpp
+
 #if defined(__SWITCH__)
 #include <switch.h>
 #endif
@@ -656,6 +658,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       REXLOG_INFO("[mem] process memory: {} MB used of {} MB", used >> 20, total >> 20);
     }
 #endif
+    gow2_log_main_thread();
     REXLOG_INFO("[gpu] draws: {} geometry, {} sent to the renderer: {} drawn, {} rejected by it; skipped here: "
                 "{} without VS, {} without PS (the renderer logs each rejection cause once)",
                 geometria_, enviados_, dibujados, rechazados, sin_vs_, sin_ps_);

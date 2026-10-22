@@ -17,6 +17,8 @@
 #include <unordered_set>
 
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xthread.h>
 
 namespace {
 constexpr uint32_t kGNames = 0x83136834;
@@ -57,7 +59,13 @@ void Report(uint8_t* base, const char* walk, uint32_t object, int depth) {
 }
 
 // The object out of its own attachment array (moving the rest down): every walk of that array loops otherwise.
+// Its field +64 (a Kismet sequence's ParentSequence, by the class the log names: Main_Sequence of class Sequence)
+// pointing at itself is cleared too: a root sequence has no parent, and loops that climb parents never end otherwise.
 void Untangle(uint8_t* base, uint32_t object) {
+  if (REX_LOAD_U32(object + 64) == object) {
+    REX_STORE_U32(object + 64, 0);
+    REXLOG_WARN("[guard] {} at {:08X} was its own parent (+64): cleared", NameOf(base, object), object);
+  }
   const uint32_t data = REX_LOAD_U32(object + 236);
   uint32_t count = REX_LOAD_U32(object + 240);
   if (!data || count > 4096) return;
@@ -77,7 +85,7 @@ void Untangle(uint8_t* base, uint32_t object) {
 
 REX_EXTERN(__imp__sub_8255E4A8);
 REX_HOOK_RAW(sub_8255E4A8) {
-  if (t_attach_depth == 0) Untangle(base, ctx.r3.u32);
+  Untangle(base, ctx.r3.u32);
   if (t_attach_depth >= kMaxDepth) {
     Report(base, "attachment", ctx.r3.u32, t_attach_depth);
     return;
@@ -89,6 +97,7 @@ REX_HOOK_RAW(sub_8255E4A8) {
 
 REX_EXTERN(__imp__sub_8255A5C0);
 REX_HOOK_RAW(sub_8255A5C0) {
+  Untangle(base, ctx.r3.u32);
   if (t_chain_depth >= kMaxDepth) {
     Report(base, "+64 chain", ctx.r3.u32, t_chain_depth);
     ctx.r3.u64 = 0;  // what the function answers at the end of a chain
@@ -122,4 +131,28 @@ extern "C" void gow2_stack_cut(PPCContext& ctx, uint8_t* base, const char* funct
                             : std::string());
   }
   ctx.r3.u64 = 0;
+}
+
+// Where the main guest thread is, for the 10 s statistics (src/gow2_gpu.cpp): its last call site (lr), stack pointer
+// and the objects in r3, r30 and r31, named when they look like UE3 objects. A hang shows up as the same place
+// repeated, without a rebuild to find it.
+namespace {
+std::string Describe(uint8_t* base, uint32_t value) {
+  const bool ue3 = value >= 0x40000000u && value < 0xC0000000u && REX_LOAD_U32(value) >= 0x82000000u &&
+                   REX_LOAD_U32(value) < 0x83300000u;
+  if (!ue3) return fmt::format("{:08X}", value);
+  return fmt::format("{:08X} {} ({})", value, NameOf(base, value), NameOf(base, REX_LOAD_U32(value + kObjClass)));
+}
+}  // namespace
+
+void gow2_log_main_thread() {
+  auto* kernel = rex::system::kernel_state();
+  if (!kernel) return;
+  for (auto& thread : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
+    if (!thread->main_thread() || !thread->thread_state()) continue;
+    const PPCContext& ctx = *thread->thread_state()->context();
+    uint8_t* base = kernel->memory()->virtual_membase();
+    REXLOG_INFO("[main] lr {:08X} r1 {:08X} r3 {} r30 {} r31 {}", uint32_t(ctx.lr), ctx.r1.u32,
+                Describe(base, ctx.r3.u32), Describe(base, ctx.r30.u32), Describe(base, ctx.r31.u32));
+  }
 }
