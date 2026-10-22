@@ -90,6 +90,7 @@ REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, nfsmw_dk_todas_las_salidas);  // skip mode 9 (SDK patch 0033)
 REXCVAR_DECLARE(bool, nfsmw_dk_gamma_lineal);       // skip mode 10 (SDK patch 0033)
+REXCVAR_DECLARE(std::string, rex_archivos_ocultos);  // SDK patch 0048: files the game does not find
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
 // The SDK renderer's shadow-pass shortcuts (sdk/src/x360/deko/destinos.cpp; the SDK keeps their nfsmw_ names): both
 // drop colorless draws that alpha-test or discard, which here are ordinary depth-only draws. Off for Dead Space 2.
@@ -151,6 +152,9 @@ REXCVAR_DEFINE_STRING(gow2_sonda, "700,650", "Gears2",
                       "Sonda del fotograma tras la traza (ZL+ZR+Left): x,y de un cuadrado de 8x8 pixeles; cada dibujo "
                       "del pase base se dibuja solo ahi y la GPU cuenta sus pixeles: el ultimo que pinta es el que se ve "
                       "en ese punto (vacio = sin sonda)");
+REXCVAR_DEFINE_BOOL(gow2_saltar_logos, false, "Gears2",
+                    "Sin los videos de los logotipos del arranque (Epic y Microsoft Game Studios). Apagado: sin el "
+                    "archivo el juego lee un puntero nulo y no arranca (pantalla negra)");
 REXCVAR_DEFINE_BOOL(gow2_busqueda_ps, true, "Gears2",
                     "Modos de busqueda (ZL+ZR+Right): cada pulsacion deja sin dibujar un pixel shader del pase base "
                     "(false: un vertex shader de los que escriben la profundidad de la escena)");
@@ -159,6 +163,12 @@ REXCVAR_DEFINE_BOOL(gow2_busqueda_directa, true, "Gears2",
 REXCVAR_DEFINE_BOOL(gow2_saltar_vs_rotos, true, "Gears2",
                     "No dibujar los vertex shaders que rompen la geometria (nivel 2: el VS 38234053372F8F2F, con "
                     "matrices elegidas por indice, dibuja triangulos gigantes sobre toda la pantalla)");
+REXCVAR_DEFINE_INT32(gow2_arboles, 1, "Gears2",
+                     "Los arboles del nivel 2 (VS 38234053372F8F2F): 0 = no se dibujan (gow2_saltar_vs_rotos), 1 = tal cual, "
+                     "2 = con las matrices de balanceo (c11-c22) cambiadas por la identidad, 3 = identidad y c10 = 0, "
+                     "4 = solo c10 = 0");
+REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, false, "Gears2",
+                    "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
@@ -329,6 +339,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     ring_thread_->set_name("GPU ring");
     ring_thread_->Create();
     REXLOG_INFO("[gpu] ring reader started");
+    // The startup logos: the game skips a movie it cannot open (as it does with the _RUS ones it looks for first).
+    if (REXCVAR_GET(gow2_saltar_logos) && REXCVAR_GET(rex_archivos_ocultos).empty()) {
+      REXCVAR_SET(rex_archivos_ocultos, std::string("movies\\epiclogo,movies\\mgslogo"));
+      REXLOG_INFO("[gpu] startup logos skipped (gow2_saltar_logos)");
+    }
     return X_STATUS_SUCCESS;
   }
 
@@ -825,6 +840,19 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         if (EnsureRenderer()) {
           // VdSwap describes the frontbuffer in fetch constant 0; an empty TexturaSwap finds nothing (black).
           destinos_->Presentar(presenter_.get(), rex::x360::LeerTexturaSwap(registers_.data()), 1280, 720);
+          if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(gow2_arboles_prueba)) {
+            REXCVAR_SET(switch_omitir_pedido, false);
+            REXCVAR_SET(gow2_arboles, (REXCVAR_GET(gow2_arboles) + 1) % 5);
+            static constexpr const char* kModos[5] = {"not drawn", "drawn as they are", "drawn with identity sway matrices",
+                                                      "identity sway matrices and c10 = 0", "c10 = 0 only"};
+            REXLOG_INFO("[gpu] trees mode {}: {} (the next capture shows it)", REXCVAR_GET(gow2_arboles),
+                        kModos[REXCVAR_GET(gow2_arboles)]);
+            tree_capture_after_ = 3;
+          }
+          if (tree_capture_after_ && --tree_capture_after_ == 0) {
+            SaveCapture();
+            REXLOG_INFO("[gpu] capture above: trees mode {}", REXCVAR_GET(gow2_arboles));
+          }
           if (REXCVAR_GET(switch_omitir_pedido)) {
             REXCVAR_SET(switch_omitir_pedido, false);
             skip_mode_ = ((skip_mode_ ? skip_mode_ : skip_resume_) + 1) % kSkipModes;
@@ -1290,6 +1318,35 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
     }
     REXLOG_INFO("{}", text);
+    // The first vertices the index buffer names: position (stream 31.2, float3) and the index/weights (31.1 +32), with
+    // c0-c9 and c23-c26, to redo the shader's math on the PC.
+    {
+      const uint32_t init = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+      const uint32_t dma = Register(g::XE_GPU_REG_VGT_DMA_BASE);
+      const bool idx32 = (init >> 11) & 1;
+      const uint32_t pos_base = Register(v + 4) & ~0x3u, w_base = Register(v + 2) & ~0x3u;
+      const uint8_t* ib = dma ? memory_->TranslatePhysical(dma & ~0x3u) : nullptr;
+      const uint8_t* pb = pos_base ? memory_->TranslatePhysical(pos_base) : nullptr;
+      const uint8_t* wb = w_base ? memory_->TranslatePhysical(w_base) : nullptr;
+      auto f32 = [](const uint8_t* m) { return std::bit_cast<float>(rex::memory::load_and_swap<uint32_t>(m)); };
+      std::string verts;
+      for (uint32_t k = 0; ib && pb && wb && k < 6; ++k) {
+        const uint32_t i = idx32 ? rex::memory::load_and_swap<uint32_t>(ib + k * 4)
+                                 : rex::memory::load_and_swap<uint16_t>(ib + k * 2);
+        verts += fmt::format(" [i{} p({:g} {:g} {:g}) w({:g} {:g} {:g} {:g})]", i, f32(pb + i * 12), f32(pb + i * 12 + 4),
+                             f32(pb + i * 12 + 8), f32(wb + i * 64 + 32), f32(wb + i * 64 + 36), f32(wb + i * 64 + 40),
+                             f32(wb + i * 64 + 44));
+      }
+      std::string cs;
+      for (uint32_t c : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 27u, 28u, 29u, 30u}) {
+        const uint32_t r = 0x4000 + c * 4;
+        cs += fmt::format(" c{}=({:g} {:g} {:g} {:g})", c, std::bit_cast<float>(Register(r)),
+                          std::bit_cast<float>(Register(r + 1)), std::bit_cast<float>(Register(r + 2)),
+                          std::bit_cast<float>(Register(r + 3)));
+      }
+      REXLOG_INFO("[gpu] skin VS n{} vertices (index base {:08X}, {}-bit, endian {}):{};{}", vs_->numero, dma,
+                  idx32 ? 32 : 16, Register(g::XE_GPU_REG_VGT_DMA_SIZE) >> 30, verts, cs);
+    }
   }
 
   // The lamp glow (gVFGlowInfo) and corona (modulate_by_corona_info_vs) vertex shaders: both read the lamp's
@@ -1375,13 +1432,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // clear shader's c0: the same shape also fills the 80-wide float exposure target with game data (c0 like 0.027 0
     // -18.4 1), which is not a clear.
     const uint32_t initiator = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+    // Also onto a k_16_16 target (fixed point, -32..32): Gears of War 2 clears its motion blur velocity buffer (EDRAM
+    // 658, 640x360) that way before writing the moving objects' velocities with MAX blending. Never cleared, it kept
+    // the largest velocity ever written, and the hero riding a vehicle stayed smeared though he does not move.
+    const uint32_t clear_format = (Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF;  // (its color: EmulateClear)
     bool rect_clear = !msaa && (initiator & 0x3F) == 8 && (initiator >> 16) == 3 &&
-                      Register(g::XE_GPU_REG_RB_COLOR_MASK) == 0xFFFF &&
-                      ((Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF) <= 1;
+                      Register(g::XE_GPU_REG_RB_COLOR_MASK) == 0xFFFF && (clear_format <= 1 || clear_format == 4);
     for (uint32_t j = 0; j < 4 && rect_clear; ++j) {
       float v;
       std::memcpy(&v, &registers_[0x4400 + j], 4);
-      rect_clear = v >= 0.0f && v <= 1.0f;
+      rect_clear = clear_format == 4 ? (std::isfinite(v) && v >= -32.0f && v <= 32.0f) : (v >= 0.0f && v <= 1.0f);
     }
     // Gears of War 2 fills each shadow map with the far plane before drawing it: one rectangle, depth-only, depth
     // written with ALWAYS (depthcontrol 00000076), through a vertex shader of its own that is not in the library.
@@ -1454,12 +1514,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) && depth_vs_frame_.size() < 256) {
       ++depth_vs_frame_[vs_->numero];
     }
+    bool tree_identity = false, tree_c10_zero = false;
     if (vs_->huella_contenedor == kBrokenSkinVs) {
       LogBrokenSkinDraw();
-      if (REXCVAR_GET(gow2_saltar_vs_rotos)) {
+      const int32_t mode = REXCVAR_GET(gow2_arboles);
+      if (mode == 0 && REXCVAR_GET(gow2_saltar_vs_rotos)) {
         ++skipped_broken_vs_;
         return;
       }
+      tree_identity = mode == 2 || mode == 3;
+      tree_c10_zero = mode == 3 || mode == 4;
     }
     if (IsGlowShader(vs_)) {
       if (glow_draws_logged_ < 12) {
@@ -1536,7 +1600,35 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       request.generacion_encuadre = generacion_encuadre_;
       destinos_->EmpezarOclusion(probe_key);
     }
+    // gow2_arboles = 2: the trees' three sway matrices (c11-c22) replaced by the identity for this draw.
+    std::array<uint32_t, 48> saved_sway{};
+    std::array<uint32_t, 4> saved_c10{};
+    if (tree_c10_zero) {
+      // The index offset c10.x: with it 0 the matrix index is r1.x mod 3 of a 1 (no truncation of a 2/3 involved).
+      for (uint32_t i = 0; i < 4; ++i) {
+        saved_c10[i] = registers_[0x4000 + 10 * 4 + i];
+        registers_[0x4000 + 10 * 4 + i] = 0;
+      }
+      ++generacion_constantes_vs_;
+      request.generacion_constantes_vs = generacion_constantes_vs_;
+    }
+    if (tree_identity) {
+      for (uint32_t i = 0; i < 48; ++i) {
+        saved_sway[i] = registers_[0x4000 + 11 * 4 + i];
+        registers_[0x4000 + 11 * 4 + i] = (i % 16) % 5 == 0 ? 0x3F800000u : 0u;  // rows 0-3 of each 4x4: 1 on the diagonal
+      }
+      ++generacion_constantes_vs_;
+      request.generacion_constantes_vs = generacion_constantes_vs_;
+    }
     const bool drawn = destinos_->Dibujar(request);
+    if (tree_identity) {
+      for (uint32_t i = 0; i < 48; ++i) registers_[0x4000 + 11 * 4 + i] = saved_sway[i];
+      ++generacion_constantes_vs_;
+    }
+    if (tree_c10_zero) {
+      for (uint32_t i = 0; i < 4; ++i) registers_[0x4000 + 10 * 4 + i] = saved_c10[i];
+      ++generacion_constantes_vs_;
+    }
     if (probe) {
       const uint64_t ticket = destinos_->TerminarOclusionAsincrona(probe_key);
       registers_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] = saved_tl;
@@ -1726,6 +1818,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // so the depth it writes (z of the first vertex, through the viewport) is the color the target gets. Read before
     // fetch constant 0 is replaced with the renderer's own rectangle below.
     float game_z = 0.0f;
+    float game_color[4] = {};
     bool game_vertices = false;
     if ((base.fetch_vertices[0] & 0x3) == uint32_t(xenos::FetchConstantType::kVertex) &&
         ((base.fetch_vertices[1] >> 2) & 0xFFFFFF) >= 7) {
@@ -1734,6 +1827,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       float z;
       std::memcpy(&z, v + 2 * 4, 4);
       z = xenos::GpuSwap(z, endian);
+      for (uint32_t j = 0; j < 4; ++j) {  // COLOR, after POSITION
+        std::memcpy(&game_color[j], v + (3 + j) * 4, 4);
+        game_color[j] = xenos::GpuSwap(game_color[j], endian);
+      }
       float zs, zo;
       std::memcpy(&zs, &r[g::XE_GPU_REG_PA_CL_VPORT_ZSCALE], 4);
       std::memcpy(&zo, &r[g::XE_GPU_REG_PA_CL_VPORT_ZOFFSET], 4);
@@ -1808,9 +1905,22 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         color |= uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)) << (j * 8);
       }
     }
+    // A k_16_16 target: the clear rectangle's vertex color (its pixel shader's c0 holds 8, not the color: as the color,
+    // the velocity buffer was filled with "a moving object everywhere" and the whole screen smeared) as the target's
+    // EDRAM bits (16-bit fixed point, value / 32 * 32767), passed as such (bit 31 of RB_COPY_CONTROL, SDK patch 0040).
+    bool color_as_bits = false;
+    if (!msaa && ((base.rb_color_info[0] >> 16) & 0xF) == 4) {
+      color = 0;
+      for (uint32_t j = 0; j < 2; ++j) {
+        const float v = game_vertices && std::isfinite(game_color[j]) ? game_color[j] : 0.0f;
+        const int32_t q = int32_t(std::lround(std::clamp(v / 32.0f, -1.0f, 1.0f) * 32767.0f));
+        color |= uint32_t(uint16_t(int16_t(q))) << (j * 16);
+      }
+      color_as_bits = true;
+    }
     if (c0_written) {
       rex::x360::RegistrosCopia c = base;
-      c.rb_copy_control = 0u | (1u << 8) | kNullCommand;
+      c.rb_copy_control = 0u | (1u << 8) | kNullCommand | (color_as_bits ? 1u << 31 : 0u);
       c.rb_color_clear = color;
       c.rb_color_clear_lo = 0;
       destinos_->Copiar(c);
@@ -2438,6 +2548,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::chrono::steady_clock::time_point probe_started_;
   bool search_ps_ = false;
   uint32_t broken_vs_logged_ = 0;
+  uint32_t tree_capture_after_ = 0;
   uint64_t skipped_broken_vs_ = 0;
   uint64_t prepass_skipped_ = 0;
   uint64_t skipped_by_mode_ = 0;

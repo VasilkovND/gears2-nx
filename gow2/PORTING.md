@@ -34,6 +34,23 @@ card's reads are slow (128 KB blocks take 8-25 ms, many of them read again), and
 library index loads in 4.8 s; 128 shaders were read from the card in the session, 2.2 ms each; the DKSH table, 0.1 s.
 The trees' vertex shader logged its inputs (`[gpu] skin VS n7842`), for the fix.
 
+## 0.8.1: the trees
+
+Level 2's trees came out as giant planes over the screen; 0.8.0 skipped their vertex shader. The search mode found it,
+logging its inputs and redoing its math on the PC gave a normal tree, and overriding its matrices on the console changed
+nothing. The cause: their BLENDINDICES are float4 (format 38), and every translated shader declares BLENDINDICES as
+uint4 (UE3 meshes store them as UBYTE4). Bound as an integer attribute, the floats arrived as raw bits (1.0 ->
+1065353216): the matrix index left the constants (zero matrix), and the "weight" multiplied the vertex. A Xenos vertex
+fetch always gives floats. SDK 0049 converts, in the stream's copy, float words for an integer input into integers, and
+keeps that copy like any stream (geometry store, dedupe): converted for every draw, the forest's ~1,000 tree draws
+copied ~40 MB a frame and fell to 10-14 fps; kept, 25-28. (The proper fix is float4 inputs in XenosRecomp with scaled
+integer formats; it needs every shader rebuilt.)
+
+Also in 0.8.1: SDK 0046 (a resolved k_16_16 target read as a k_16_16 texture gives the hardware's fixed-point value),
+0047 (16-bit indices swapped as 32-bit words are paired by the memory's alignment), 0048 (files a game must not find,
+`rex_archivos_ocultos`; skipping the logo movies this way makes the game read a null pointer, so `gow2_saltar_logos`
+is off), and the tree test modes (`gow2_arboles`).
+
 ## What it took (0.8.0)
 
 Every item names its switch (a `gow2.toml` cvar) and its code; SDK changes are the patches in `gow2/sdk-patches/`.

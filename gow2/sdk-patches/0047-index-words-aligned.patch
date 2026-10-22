@@ -1,0 +1,25 @@
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 21:40:38
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 21:40:38
+@@ -286,13 +286,18 @@
+       // of a word trade places (GpuSwap of a single uint16_t only knows kNone and k8in16, and returned the others
+       // unswapped: indices like 0x0100 for 1, triangles across a whole mesh). Each index is the matching half of its
+       // swapped word; the same result as before for kNone and k8in16.
++      // The words are the memory's, 4-byte aligned, not counted from the buffer's start: Gears of War 2 starts index
++      // ranges at 2 mod 4 (its trees, 0x117DBFA6), and pairing from the start put every index in the other half of
++      // its word (triangles across the whole mesh: giant spikes over the screen).
+       uint32_t palabra = 0;
+-      const uint8_t* par = datos + size_t(i & ~1u) * 2;
++      const uint8_t* indice = datos + size_t(i) * 2;
++      const uint8_t* par = reinterpret_cast<const uint8_t*>(uintptr_t(indice) & ~uintptr_t(3));
++      const bool alta = (uintptr_t(indice) & 2) != 0;
+       // The last index of an odd count has no partner: its word's other half is padding the GPU reads too, unless
+       // it would cross into the next page.
+-      std::memcpy(&palabra, par, (i + 1 == cuenta && !(i & 1) && (uintptr_t(par) & 0xFFF) > 0xFFC) ? 2 : 4);
++      std::memcpy(&palabra, par, (i + 1 == cuenta && !alta && (uintptr_t(par) & 0xFFF) > 0xFFC) ? 2 : 4);
+       palabra = xenos::GpuSwap(palabra, orden);
+-      v = (i & 1) ? (palabra >> 16) : (palabra & 0xFFFF);
++      v = alta ? (palabra >> 16) : (palabra & 0xFFFF);
+     }
+     if (reinicio && v == indice_reinicio) {
+       if constexpr (kEscribir) {

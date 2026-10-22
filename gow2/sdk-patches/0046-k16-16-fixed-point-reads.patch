@@ -1,0 +1,101 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 21:35:30
++++ b/include/rex/x360/deko/render.h	2026-10-22 21:35:36
+@@ -249,6 +249,7 @@
+     uint64_t version = UINT64_MAX;
+   };
+   std::unordered_map<uint64_t, ConvertidaSigno> convertidas_signo_;
++  std::unordered_map<uint64_t, ConvertidaSigno> convertidas_fijas_;  // ResueltaFija16, by serie and signs
+   // A resolved texture sampled by a fetch smaller than it (a 320x180 resolve into a 640-wide texture, read as 320x180):
+   // a copy of its top-left corner at the fetch's size, so normalized coordinates cover what the game means.
+   const ImagenDk* ResueltaRecortada(const ImagenDk& resuelta, uint32_t ancho, uint32_t alto);
+@@ -263,6 +264,8 @@
+   };
+   std::unordered_map<uint64_t, VolumenResuelto> volumenes_resueltos_;
+   const ImagenDk* ResueltaConSigno(const ImagenDk& resuelta, uint32_t signos);
++  // A resolved k_16_16 target read as a k_16_16 texture (fetch format 25): converted to what the hardware returns.
++  const ImagenDk* ResueltaFija16(const ImagenDk& resuelta, uint32_t signos);
+   deko::Subida Reservar(uint32_t bytes, uint32_t alineacion);
+ 
+   // ---- Render targets and resolved textures (nfsmw_dk_destinos.cpp)
+diff -ru a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp	2026-10-22 21:35:30
++++ b/src/x360/deko/destinos.cpp	2026-10-22 21:35:36
+@@ -348,6 +348,10 @@
+   vec4 firmado = max(mix(b, b - 256.0, greaterThanEqual(b, vec4(128.0))) / 127.0, vec4(-1.0));
+   color = mix(t, firmado, equal(copia.modos, ivec4(1)));
+   color = mix(color, t * 2.0 - 1.0, equal(copia.modos, ivec4(2)));
++  // 3, 4: a k_16_16 target (fixed point, -32..32, held here as is) read as a k_16_16 texture: its 16 bits are the value
++  // x 1024 (two's complement), so unsigned reads give those bits / 65535 and signed reads the value / 32.
++  color = mix(color, mod(floor(t * 1024.0 + 0.5) + 65536.0, 65536.0) / 65535.0, equal(copia.modos, ivec4(3)));
++  color = mix(color, clamp(t / 32.0, -1.0, 1.0), equal(copia.modos, ivec4(4)));
+ }
+ )";
+ constexpr const char* kFsCopiaProfundidad = R"(#version 460
+diff -ru a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
+--- a/src/x360/deko/texturas.cpp	2026-10-22 21:35:30
++++ b/src/x360/deko/texturas.cpp	2026-10-22 22:32:16
+@@ -22,6 +22,10 @@
+ #include <rex/x360/deko/render.h>
+ #include <rex/x360/xenos.h>
+ 
++REXCVAR_DEFINE_BOOL(nfsmw_dk_16_16_fijo, false, "NFSMW",
++                    "deko3d: un destino k_16_16 (coma fija, -32..32) leido como textura k_16_16 da los bits como entero "
++                    "normalizado (o el valor / 32 con signo) en vez del valor tal cual. Apagado: Gears of War 2 lee su "
++                    "buffer de velocidades esperando el valor escrito (0..1, lo decodifica con 2v - 1)");
+ REXCVAR_DEFINE_BOOL(nfsmw_nativo_mipmaps, true, "NFSMW",
+                     "Renderizador nativo: sube los niveles de mip que trae el juego (como en la Xbox 360). false: solo "
+                     "el nivel base, como antes de la build 136")
+@@ -307,6 +311,38 @@
+   return &c.imagen;
+ }
+ 
++const ImagenDk* RenderDk::ResueltaFija16(const ImagenDk& resuelta, uint32_t signos) {
++  // Per channel: 4 signed (value / 32), 3 unsigned (the fixed-point bits as a normalized integer).
++  int32_t modos[4] = {};
++  for (uint32_t i = 0; i < 2; ++i) {
++    modos[i] = ((signos >> (2 * i)) & 0x3) == 1 ? 4 : 3;
++  }
++  if (convertidas_fijas_.size() > 64) {
++    for (auto& [clave, c] : convertidas_fijas_) {
++      DestruirImagen(c.imagen);
++    }
++    convertidas_fijas_.clear();
++  }
++  ConvertidaSigno& c = convertidas_fijas_[(resuelta.serie << 8) | (signos & 0xFF)];
++  if (!c.imagen.viva) {
++    if (!CrearImagen(c.imagen, DkImageType_2D, DkImageFormat_RGBA16_Float, resuelta.ancho, resuelta.alto, 1, 1,
++                     DkImageFlags_UsageRender, "resuelta 16_16 fija")) {
++      return nullptr;
++    }
++    REXLOG_INFO("[deko3d] resuelta 16_16 {}x{} leida como textura 16_16 (signos {:02X}): copia convertida",
++                resuelta.ancho, resuelta.alto, signos);
++  }
++  if (c.version != resuelta.version) {
++    if (!Copiar3D(resuelta, 0, 0, resuelta.ancho, resuelta.alto, c.imagen, 0, 0, modos)) {
++      return nullptr;
++    }
++    OlvidarEstado();
++    c.version = resuelta.version;
++    ++c.imagen.version;
++  }
++  return &c.imagen;
++}
++
+ const ImagenDk* RenderDk::ResueltaRecortada(const ImagenDk& resuelta, uint32_t ancho, uint32_t alto) {
+   if (recortadas_.size() > 64) {  // resolves recreated at other sizes leave theirs behind
+     for (auto& [clave, c] : recortadas_) {
+@@ -565,6 +601,13 @@
+       // The emulation's copy swaps channels in memory (copy_dest_swap) and the fetch swizzle undoes it; here the copy
+       // is image to image, so the swap goes into the host channels.
+       const uint16_t host = resuelta->intercambio_rb ? kSwizzleBGRA : kSwizzleRGBA;
++      // Gears of War 2's velocity buffer: a k_16_16 target read back as a k_16_16 texture. Read as the float it holds,
++      // the motion blur got velocities ~64 times too big and smeared the hero.
++      if ((f[1] & 0x3F) == 25 && resuelta->formato == DkImageFormat_RG16_Float && REXCVAR_GET(nfsmw_dk_16_16_fijo)) {
++        if (const ImagenDk* convertida = ResueltaFija16(*resuelta, signos)) {
++          return VistaDe(*convertida, swizzle, host);
++        }
++      }
+       if (signos) {
+         // Signed or biased channels: a converted copy (Dead Space 2's normal buffer is written as n * 0.5 + 0.5 into an
+         // 8_8_8_8 target and read back biased, so its lights had every normal positive). All gamma: an sRGB view.

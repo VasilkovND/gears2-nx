@@ -1,0 +1,50 @@
+diff -ru a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp	2026-10-22 21:48:25
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp	2026-10-22 21:48:50
+@@ -56,11 +56,35 @@
+ REXCVAR_DEFINE_INT32(nfsmw_io_resumen_s, 15, "Filesystem",
+                      "Cada cuantos segundos se escribe el resumen [io] (0 = nunca).");
+ 
++REXCVAR_DEFINE_STRING(rex_archivos_ocultos, "", "Filesystem",
++                      "Partes de ruta (separadas por comas, sin distinguir mayusculas) de archivos que el juego no "
++                      "encuentra al abrirlos: por ejemplo los videos de los logotipos del arranque");
++
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ 
+ namespace {
++// rex_archivos_ocultos: does the path contain one of the listed pieces (case-insensitive)?
++bool RutaOculta(std::string_view ruta) {
++  const std::string lista = REXCVAR_GET(rex_archivos_ocultos);
++  if (lista.empty()) return false;
++  std::string baja(ruta);
++  for (char& c : baja) c = char(std::tolower(static_cast<unsigned char>(c)));
++  size_t inicio = 0;
++  while (inicio <= lista.size()) {
++    size_t fin = lista.find(',', inicio);
++    if (fin == std::string::npos) fin = lista.size();
++    std::string pieza = lista.substr(inicio, fin - inicio);
++    for (char& c : pieza) c = char(std::tolower(static_cast<unsigned char>(c)));
++    if (!pieza.empty() && baja.find(pieza) != std::string::npos) return true;
++    inicio = fin + 1;
++  }
++  return false;
++}
++}  // namespace
+ 
++namespace {
++
+ struct ContadoresIo {
+   std::atomic<uint64_t> aperturas_ok{0};
+   std::atomic<uint64_t> aperturas_fallo{0};
+@@ -517,6 +541,10 @@
+   // Enforce that the path is ASCII.
+   if (!IsValidPath(target_path, false)) {
+     return X_STATUS_OBJECT_NAME_INVALID;
++  }
++  if (RutaOculta(target_path)) {
++    REXKRNL_INFO("[io] oculto (rex_archivos_ocultos): {}", target_path);
++    return X_STATUS_NO_SUCH_FILE;
+   }
+ 
+   if (object_attrs->root_directory != 0xFFFFFFFD &&  // ObDosDevices
