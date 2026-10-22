@@ -117,6 +117,8 @@ REXCVAR_DEFINE_INT32(gow2_auto_captura_s, 5, "Gears2",
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_primero_s, 120, "Gears2",
                      "Segundo de juego del primer volcado automatico de las texturas resueltas de un fotograma");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_cada_s, 300, "Gears2", "Segundos entre volcados automaticos; 0 = solo el primero");
+REXCVAR_DEFINE_BOOL(gow2_consultas_siempre_visibles, false, "Gears2",
+                    "Consultas de oclusion: cada segundo ZPD cuenta como el final de una consulta visible, aunque no lleve la marca de D3D (prueba)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
@@ -1934,8 +1936,20 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     auto* counts = memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(address);
     const bool end_via_z_pass = counts->ZPass_A == kQueryFinished || counts->ZPass_B == kQueryFinished;
     const bool end_via_z_fail = counts->ZFail_A == kQueryFinished || counts->ZFail_B == kQueryFinished;
+    // What the game left there, for the first queries and every traced frame (Gears of War 2 culled its whole world:
+    // whether its occlusion queries come back visible is the first thing to know).
+    if (queries_logged_ < 48 || draw_tracing_) {
+      ++queries_logged_;
+      const uint32_t* w = reinterpret_cast<const uint32_t*>(counts);
+      REXLOG_INFO("[query] ZPD at {:08X} ctl {:08X}: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} -> {}",
+                  address, Register(rex::graphics::XE_GPU_REG_RB_SAMPLE_COUNT_CTL), w[0], w[1], w[2], w[3], w[4], w[5],
+                  w[6], w[7], end_via_z_pass || end_via_z_fail ? "end: visible" : "begin: zeroed");
+    }
     std::memset(counts, 0, sizeof(*counts));
-    if (end_via_z_pass || end_via_z_fail) {
+    // The test option: without D3D's end marker, every second ZPD is taken as a query's end (begin and end come in
+    // pairs), so a query is visible even if the marker never shows up where we look.
+    const bool end_by_pair = REXCVAR_GET(gow2_consultas_siempre_visibles) && (zpd_count_++ & 1);
+    if (end_via_z_pass || end_via_z_fail || end_by_pair) {
       counts->ZPass_A = kFakeSampleCount;
       counts->Total_A = kFakeSampleCount;
     }
@@ -1991,6 +2005,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t rect_buffer_size_ = 0;
   uint64_t last_frame_draws_ = 0;   // geometry draws of the last finished frame
   uint32_t packet_trace_n_ = 0;     // [pm4] lines of the traced frame
+  uint32_t queries_logged_ = 0;     // [query] lines
+  uint64_t zpd_count_ = 0;          // gow2_consultas_siempre_visibles
   uint64_t rect_lists_ = 0;
   uint32_t rect_unexpanded_logged_ = 0;
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection
