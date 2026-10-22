@@ -161,7 +161,8 @@ REXCVAR_DEFINE_BOOL(gow2_saltar_vs_rotos, true, "Gears2",
                     "matrices elegidas por indice, dibuja triangulos gigantes sobre toda la pantalla)");
 REXCVAR_DEFINE_INT32(gow2_arboles, 0, "Gears2",
                      "Los arboles del nivel 2 (VS 38234053372F8F2F): 0 = no se dibujan (gow2_saltar_vs_rotos), 1 = tal cual, "
-                     "2 = con las matrices de balanceo (c11-c22) cambiadas por la identidad");
+                     "2 = con las matrices de balanceo (c11-c22) cambiadas por la identidad, 3 = identidad y c10 = 0, "
+                     "4 = solo c10 = 0");
 REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, true, "Gears2",
                     "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
@@ -832,8 +833,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
           destinos_->Presentar(presenter_.get(), rex::x360::LeerTexturaSwap(registers_.data()), 1280, 720);
           if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(gow2_arboles_prueba)) {
             REXCVAR_SET(switch_omitir_pedido, false);
-            REXCVAR_SET(gow2_arboles, (REXCVAR_GET(gow2_arboles) + 1) % 3);
-            static constexpr const char* kModos[3] = {"not drawn", "drawn as they are", "drawn with identity sway matrices"};
+            REXCVAR_SET(gow2_arboles, (REXCVAR_GET(gow2_arboles) + 1) % 5);
+            static constexpr const char* kModos[5] = {"not drawn", "drawn as they are", "drawn with identity sway matrices",
+                                                      "identity sway matrices and c10 = 0", "c10 = 0 only"};
             REXLOG_INFO("[gpu] trees mode {}: {} (the next capture shows it)", REXCVAR_GET(gow2_arboles),
                         kModos[REXCVAR_GET(gow2_arboles)]);
             tree_capture_after_ = 3;
@@ -1500,7 +1502,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) && depth_vs_frame_.size() < 256) {
       ++depth_vs_frame_[vs_->numero];
     }
-    bool tree_identity = false;
+    bool tree_identity = false, tree_c10_zero = false;
     if (vs_->huella_contenedor == kBrokenSkinVs) {
       LogBrokenSkinDraw();
       const int32_t mode = REXCVAR_GET(gow2_arboles);
@@ -1508,7 +1510,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         ++skipped_broken_vs_;
         return;
       }
-      tree_identity = mode == 2;
+      tree_identity = mode == 2 || mode == 3;
+      tree_c10_zero = mode == 3 || mode == 4;
     }
     if (IsGlowShader(vs_)) {
       if (glow_draws_logged_ < 12) {
@@ -1587,6 +1590,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     // gow2_arboles = 2: the trees' three sway matrices (c11-c22) replaced by the identity for this draw.
     std::array<uint32_t, 48> saved_sway{};
+    std::array<uint32_t, 4> saved_c10{};
+    if (tree_c10_zero) {
+      // The index offset c10.x: with it 0 the matrix index is r1.x mod 3 of a 1 (no truncation of a 2/3 involved).
+      for (uint32_t i = 0; i < 4; ++i) {
+        saved_c10[i] = registers_[0x4000 + 10 * 4 + i];
+        registers_[0x4000 + 10 * 4 + i] = 0;
+      }
+      ++generacion_constantes_vs_;
+      request.generacion_constantes_vs = generacion_constantes_vs_;
+    }
     if (tree_identity) {
       for (uint32_t i = 0; i < 48; ++i) {
         saved_sway[i] = registers_[0x4000 + 11 * 4 + i];
@@ -1598,6 +1611,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const bool drawn = destinos_->Dibujar(request);
     if (tree_identity) {
       for (uint32_t i = 0; i < 48; ++i) registers_[0x4000 + 11 * 4 + i] = saved_sway[i];
+      ++generacion_constantes_vs_;
+    }
+    if (tree_c10_zero) {
+      for (uint32_t i = 0; i < 4; ++i) registers_[0x4000 + 10 * 4 + i] = saved_c10[i];
       ++generacion_constantes_vs_;
     }
     if (probe) {
