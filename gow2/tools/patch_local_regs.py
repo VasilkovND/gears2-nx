@@ -753,7 +753,11 @@ def fixpoint_liveout(summ, ref, mod, hooked, defined, native):
                     # is a jump table's out-of-range path.)
                     if own is None:
                         own = liveness(s, ref, mod, hooked, defined, liveout[name] & RESULT_FLOOR, False)[1]
-                    after = (own[i] | (liveout[name] & RESULT_FLOOR if ret else 0)) & ABI_MOD
+                    # The non-volatiles are another matter: the target must leave their ctx copy as it found it
+                    # when anything after the call may read it (a later callee's REF included), so those count
+                    # in full.
+                    after = ((own[i] | (liveout[name] & RESULT_FLOOR if ret else 0)) & ABI_MOD) | (
+                        (outs[i] | (liveout[name] if ret else 0)) & ~ABI_MOD)
                     grew_floor |= after
         if grew_floor & ~floor:
             floor |= grew_floor
