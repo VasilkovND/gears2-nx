@@ -836,7 +836,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
               for (const auto& [vs, draws] : list) {
                 if (search_vs_.size() == kSearchModes) break;
                 search_vs_.push_back(vs);
-                names += fmt::format(" n{} ({} draws)", vs, draws);
+                names += fmt::format(" n{} ({})", vs, draws);
               }
               search_ps_ = REXCVAR_GET(gow2_busqueda_ps);
               REXLOG_INFO("[gpu] search: {} {} shaders:{}", search_vs_.size(),
@@ -1182,7 +1182,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   // Then the search modes: kSkipModesFixed + i skips only the i-th vertex shader of the scene's depth-writing draws
   // (the most frequent first, as counted in the frame before the first search mode), to find which one draws the
   // giant triangles of level 2. After the last one, back to normal rendering.
-  static constexpr uint32_t kSearchModes = 32;
+  static constexpr uint32_t kSearchModes = 128;
   static constexpr uint32_t kSkipModes = kSkipModesFixed + kSearchModes;
   static constexpr const char* kSkipModeNames[kSkipModesFixed] = {
       "none (normal rendering)",
@@ -1442,7 +1442,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       if (ps_ && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 &&
           (Register(g::XE_GPU_REG_RB_COLOR_INFO) & 0xFFF) == 0x2D0 &&
           ((Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF) == 3 && depth_vs_frame_.size() < 256) {
-        ++depth_vs_frame_[ps_->numero];
+        // Weighted by vertices: the big meshes (the ground) are one or two draws each.
+        depth_vs_frame_[ps_->numero] += std::max<uint32_t>(Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR) >> 16, 1);
       }
     } else if ((Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 &&
                (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) && depth_vs_frame_.size() < 256) {
