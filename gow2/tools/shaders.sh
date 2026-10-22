@@ -7,7 +7,8 @@
 #
 # The game has 35,886 different shaders (every material of every map has its own); all of them would be a ~470 MB
 # library. By default the set is the global shader cache (GlobalShaderCache-Xbox360.bin: menus, post-processing, movies),
-# the startup packages (engine, game, menus) and Act 1's hospital maps (SP_Hospital*): 10,486. ALL=1 takes every package, PACKAGES="<glob> ..." (file names in GearGame/CookedXenon) chooses them.
+# the startup packages (engine, game, menus), Act 1's hospital maps (SP_Hospital*), its tutorial (SP_Tutorial*: the
+# first steps of the campaign, 379 shaders the hospital maps lack) and the characters' dialogue packages (GUD_*). ALL=1 takes every package, PACKAGES="<glob> ..." (file names in GearGame/CookedXenon) chooses them.
 #
 #   gow2/tools/shaders.sh <game folder>   -> gow2/out/shaders/gow2_shaders.dslib and shadercache_dksh.bin (beside the NRO)
 #
@@ -29,7 +30,7 @@ COOKED="$GAME/GearGame/CookedXenon"
 if [ "${ALL:-0}" = 1 ]; then
   INPUTS=("$GAME/GearGame")
 else
-  PACKAGES="${PACKAGES:-GlobalShaderCache-*.bin Core.xxx Engine.xxx GameFramework.xxx GearGame.xxx GearGame_P.xxx GearStart.xxx IpDrv.xxx OnlineSubsystemLive.xxx Startup_*.xxx SP_Hospital*.xxx}"
+  PACKAGES="${PACKAGES:-GlobalShaderCache-*.bin Core.xxx Engine.xxx GameFramework.xxx GearGame.xxx GearGame_P.xxx GearStart.xxx IpDrv.xxx OnlineSubsystemLive.xxx Startup_*.xxx SP_Hospital*.xxx SP_Tutorial*.xxx GUD_*.xxx}"
   INPUTS=()
   for g in $PACKAGES; do
     for f in "$COOKED"/$g; do [ -f "$f" ] && INPUTS+=("$f"); done

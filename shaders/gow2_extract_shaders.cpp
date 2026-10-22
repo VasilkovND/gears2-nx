@@ -112,13 +112,22 @@ bool Expand(const uint8_t* d, size_t n, std::vector<uint8_t>& out) {
   for (uint32_t b = 0; b < blocks; ++b) {
     const uint32_t csize = be32(d + table + b * 8), usize = be32(d + table + b * 8 + 4);
     if (data + csize > n || at + usize > out.size()) return false;
-    Source src{d + data, csize, 0, 0};
+    // XMemCompress's window is 128 KB by default (2^17); a few chunks (SP_Hospital_03's chunk 20) were compressed with
+    // a larger one and fail with 2^17 at their first frame: the larger windows are tried in turn.
+    int r = MSPACK_ERR_DECRUNCH;
     Sink dst{out.data() + at, usize, 0};
-    lzxd_stream* lzx = lzxd_init(&sys, reinterpret_cast<mspack_file*>(&src), reinterpret_cast<mspack_file*>(&dst), 17, 0,
-                                 0x40000, usize, 0);
-    if (!lzx) return false;
-    const int r = lzxd_decompress(lzx, usize);
-    lzxd_free(lzx);
+    for (int window = 17; window <= 21 && (r != MSPACK_ERR_OK || dst.pos != usize); ++window) {
+      Source src{d + data, csize, 0, 0};
+      dst = Sink{out.data() + at, usize, 0};
+      lzxd_stream* lzx = lzxd_init(&sys, reinterpret_cast<mspack_file*>(&src), reinterpret_cast<mspack_file*>(&dst),
+                                   window, 0, 0x40000, usize, 0);
+      if (!lzx) return false;
+      r = lzxd_decompress(lzx, usize);
+      lzxd_free(lzx);
+      if (r == MSPACK_ERR_OK && dst.pos == usize && window != 17) {
+        std::fprintf(stderr, "  LZX block %u: window 2^%d\n", b, window);
+      }
+    }
     if (r != MSPACK_ERR_OK || dst.pos != usize) {
       std::fprintf(stderr, "  LZX block %u of %u: error %d, %zu of %u bytes (compressed %u)\n", b, blocks, r, dst.pos, usize,
                    csize);

@@ -1251,7 +1251,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       std::memcpy(&v, &registers_[0x4400 + j], 4);
       rect_clear = v >= 0.0f && v <= 1.0f;
     }
-    if (!vs_ && ((msaa && (Register(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR) & 0x3FFF) >= 0x2000) || rect_clear)) {
+    // Gears of War 2 fills each shadow map with the far plane before drawing it: one rectangle, depth-only, depth
+    // written with ALWAYS (depthcontrol 00000076), through a vertex shader of its own that is not in the library.
+    // Skipped, the 800x800 shadow map kept 0 everywhere, every pixel came out shadowed and the modulated shadows
+    // blacked out characters and walls. Done as a depth clear (to the far value of that depth buffer).
+    const uint32_t depthcontrol = Register(g::XE_GPU_REG_RB_DEPTHCONTROL);
+    const bool depth_fill = !msaa && (initiator & 0x3F) == 8 && (initiator >> 16) == 3 &&
+                            (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5 && (depthcontrol & 0x6) == 0x6 &&
+                            ((depthcontrol >> 4) & 0x7) == 7;
+    if (!vs_ && ((msaa && (Register(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR) & 0x3FFF) >= 0x2000) || rect_clear ||
+                 depth_fill)) {
       if (draw_tracing_) DrawTraceLine(true, "Direct3D clear, emulated");
       EmulateClear(msaa);
       return;
