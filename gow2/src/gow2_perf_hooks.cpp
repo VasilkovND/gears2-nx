@@ -17,7 +17,11 @@
 
 #include "gow2_pch.h"
 
+#include <bit>
+#include <cmath>
+
 #include <rex/cvar.h>
+#include <rex/memory/utils.h>
 
 #if defined(__SWITCH__)
 #include <switch.h>
@@ -52,4 +56,84 @@ REX_EXTERN(__imp__sub_82955830);
 REX_HOOK_RAW(sub_82955830) {
   __imp__sub_82955830(ctx, base);
   if (ctx.r3.u32 == 0) DormirEsperando();
+}
+
+// --- Real work done natively ---------------------------------------------------------------------------------------
+//
+// sub_827FFD00  an audio effect of the game's mixer: up to three filter stages (enabled by fx+52, +72, +96) over 256
+//               frames of each channel (planar, 1024 bytes apart), with state kept between calls at fx+116..+136 and
+//               shared by the channels, as the PowerPC code does. 8 % of the audio thread in the profile. Ported
+//               operation by operation (each fmadds/fnmsubs as one fused multiply-add rounded to single precision);
+//               gow2_audio_filtro_nativo = false goes back to the recompiled code.
+REXCVAR_DEFINE_BOOL(gow2_audio_filtro_nativo, true, "Gears2",
+                    "El filtro de audio del juego (sub_827FFD00) en codigo nativo en vez del recompilado");
+
+namespace {
+inline double LeerF(uint8_t* base, uint32_t direccion) {
+  return double(std::bit_cast<float>(rex::memory::load_and_swap<uint32_t>(base + direccion)));
+}
+inline void EscribirF(uint8_t* base, uint32_t direccion, double v) {
+  rex::memory::store_and_swap<uint32_t>(base + direccion, std::bit_cast<uint32_t>(float(v)));
+}
+inline double Simple(double v) { return double(float(v)); }
+}  // namespace
+
+REX_EXTERN(sub_827FFE78);
+REX_EXTERN(__imp__sub_827FFD00);
+REX_HOOK_RAW(sub_827FFD00) {
+  if (!REXCVAR_GET(gow2_audio_filtro_nativo)) {
+    __imp__sub_827FFD00(ctx, base);
+    return;
+  }
+  const uint32_t fx = ctx.r3.u32, buf = ctx.r4.u32;
+  const uint64_t lr = ctx.lr;
+  sub_827FFE78(ctx, base);  // r3 = fx, r4 = buf, as the original calls it
+  ctx.lr = lr;
+  auto U = [&](uint32_t a) { return rex::memory::load_and_swap<uint32_t>(base + a); };
+  const bool e1 = U(fx + 52) != 0, e2 = U(fx + 72) != 0, e3 = U(fx + 96) != 0;
+  if (e1 || e2 || e3) {
+    const uint32_t cab = buf ? buf - 8 : 0;
+    const uint32_t canales = base[cab + 21];
+    uint32_t col = U(cab + 28);
+    const double a = LeerF(base, fx + 68), b = LeerF(base, fx + 64), c = LeerF(base, fx + 76), d = LeerF(base, fx + 92),
+                 g = LeerF(base, fx + 88), h = LeerF(base, fx + 112), k = LeerF(base, fx + 108);
+    double s132 = LeerF(base, fx + 132), s116 = LeerF(base, fx + 116), s120 = LeerF(base, fx + 120),
+           s124 = LeerF(base, fx + 124), s128 = LeerF(base, fx + 128), s136 = LeerF(base, fx + 136);
+    for (int n = 0; n < 256; ++n, col += 4) {
+      uint32_t p = col;
+      for (uint32_t ch = 0; ch < canales; ++ch, p += 1024) {
+        double x = LeerF(base, p);
+        if (e1) {
+          const double t = Simple(-std::fma(a, s132, -x));
+          const double u = Simple(std::fma(a, t, s132));
+          x = Simple(std::fma(Simple(x - u), b, x));
+          s132 = t;
+        }
+        if (e2) {
+          const double m = Simple(x * c), o116 = s116, o120 = s120, o124 = s124, o128 = s128;
+          s120 = o116;
+          s116 = x;
+          s128 = o124;
+          const double f3 = Simple(std::fma(d, o116, -m)), f2 = Simple(f3 + o120);
+          const double f1 = Simple(-std::fma(o124, d, -f2)), f13 = Simple(std::fma(c, o128, f1));
+          s124 = f13;
+          x = Simple(std::fma(Simple(x - f13), g, x));
+        }
+        if (e3) {
+          const double t = Simple(-std::fma(h, s136, -x));
+          const double u = Simple(std::fma(h, t, s136));
+          x = Simple(std::fma(Simple(u + x), k, x));
+          s136 = t;
+        }
+        EscribirF(base, p, x);
+      }
+    }
+    EscribirF(base, fx + 132, s132);
+    EscribirF(base, fx + 116, s116);
+    EscribirF(base, fx + 120, s120);
+    EscribirF(base, fx + 124, s124);
+    EscribirF(base, fx + 128, s128);
+    EscribirF(base, fx + 136, s136);
+  }
+  ctx.r3.u64 = 0;
 }

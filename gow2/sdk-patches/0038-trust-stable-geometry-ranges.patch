@@ -1,0 +1,93 @@
+diff -ru a/include/rex/x360/deko/geometria.h b/include/rex/x360/deko/geometria.h
+--- a/include/rex/x360/deko/geometria.h	2026-10-22 16:30:09
++++ b/include/rex/x360/deko/geometria.h	2026-10-22 16:30:09
+@@ -131,6 +131,8 @@
+     uint32_t offset = 0, tam = 0;  // its block (tam 0: none)
+     uint32_t vmin = 0, vmax = 0;
+     uint32_t cambios = 0;          // content changes in a row
++    uint32_t confirmadas = 0;      // checks in a row that found it unchanged (nfsmw_dk_geometria_confianza)
++    uint8_t fase = 0;              // the next phase its sampled check reads (rotates per entry)
+     bool fases_validas = false;    // fases[] describe the stored content (ranges of more than kFases lines)
+     uint64_t fases[8] = {};        // the hash of each phase of its 64-byte lines (Huellas)
+   };
+diff -ru a/src/x360/deko/geometria.cpp b/src/x360/deko/geometria.cpp
+--- a/src/x360/deko/geometria.cpp	2026-10-22 16:30:09
++++ b/src/x360/deko/geometria.cpp	2026-10-22 16:30:09
+@@ -10,7 +10,14 @@
+ #include <algorithm>
+ 
+ #include <rex/ui/deko3d/nucleo.h>
++#include <rex/cvar.h>
+ 
++REXCVAR_DEFINE_INT32(nfsmw_dk_geometria_confianza, 4, "NFSMW",
++                     "deko3d: un rango de vertices que salio igual 16 comprobaciones seguidas solo se vuelve a comprobar 1 "
++                     "de cada N fotogramas (el resto se usa el bloque guardado). 1 = comprobar siempre, como antes. "
++                     "Gears of War 2: la huella de la geometria era un 9 % del hilo del anillo")
++    .range(1, 8);
++
+ namespace rex::deko3d {
+ 
+ namespace {
+@@ -197,6 +204,7 @@
+   }
+   e.fotograma = fotograma_;
+   if (nueva) {
++    e.fase = uint8_t((direccion >> 6) % kFases);
+     e.datos = direccion;
+     e.bytes = bytes;
+     e.modo = modo;
+@@ -213,17 +221,29 @@
+     return {};
+   }
+   e.epoca = epoca_;
++  // A range found unchanged 16 times in a row is trusted for confianza - 1 frames out of confianza (a range the game
++  // rewrites in place shows its old content for at most that long; ranges that change go to the ring as volatile).
++  static const uint32_t confianza = uint32_t(REXCVAR_GET(nfsmw_dk_geometria_confianza));
++  if (e.tam && confianza > 1 && e.confirmadas >= 16 && (fotograma_ + (e.datos >> 6)) % confianza != 0) {
++    ++estadisticas_.aciertos;
++    estadisticas_.bytes_aciertos += bytes;
++    return {&e, gpu_ + e.offset, e.vmin, e.vmax};
++  }
+   // A stored range with its phase hashes: one eighth of its lines (rotating, so every line is read at least once
+   // every kFases frames) plus the first and the last. The guard: the first kMuestrasGuardia sampled checks also hash
+   // everything, and one disagreement switches sampling off.
+   if (e.tam && e.fases_validas && muestreo_) {
+-    const uint32_t fase = uint32_t((fotograma_ + (e.datos >> 6)) % kFases);
++    // Per entry, not from the frame: with checks only 1 frame in confianza, a frame-based phase would read only some
++    // of the phases.
++    const uint32_t fase = e.fase;
++    e.fase = uint8_t((e.fase + 1) % kFases);
+     uint64_t leidos = 0;
+     const bool muestra_igual = HuellaFase(datos, bytes, fase, leidos) == e.fases[fase];
+     estadisticas_.bytes_huella += leidos;
+     ++estadisticas_.muestreos;
+     if (muestra_igual && estadisticas_.muestreos > kMuestrasGuardia) {
+       e.cambios = 0;
++      e.confirmadas += e.confirmadas < 16;
+       ++estadisticas_.aciertos;
+       estadisticas_.bytes_aciertos += bytes;
+       return {&e, gpu_ + e.offset, e.vmin, e.vmax};
+@@ -234,6 +254,7 @@
+       estadisticas_.bytes_huella += bytes;
+       if (completa == e.huella) {
+         e.cambios = 0;
++        e.confirmadas += e.confirmadas < 16;
+         ++estadisticas_.aciertos;
+         estadisticas_.bytes_aciertos += bytes;
+         return {&e, gpu_ + e.offset, e.vmin, e.vmax};
+@@ -262,6 +283,7 @@
+       std::copy(fases, fases + kFases, e.fases);
+     }
+     e.cambios = 0;
++    e.confirmadas += e.confirmadas < 16;
+     if (e.tam) {
+       ++estadisticas_.aciertos;
+       estadisticas_.bytes_aciertos += bytes;
+@@ -278,6 +300,7 @@
+   }
+   // Changed: a new block next time it is stable; changing again, to the ring for a while.
+   ++estadisticas_.cambios;
++  e.confirmadas = 0;
+   e.huella = huella;
+   e.fases_validas = con_fases;
+   std::copy(fases, fases + kFases, e.fases);
