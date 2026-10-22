@@ -1432,13 +1432,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // clear shader's c0: the same shape also fills the 80-wide float exposure target with game data (c0 like 0.027 0
     // -18.4 1), which is not a clear.
     const uint32_t initiator = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+    // Also onto a k_16_16 target (fixed point, -32..32): Gears of War 2 clears its motion blur velocity buffer (EDRAM
+    // 658, 640x360) that way before writing the moving objects' velocities with MAX blending. Never cleared, it kept
+    // the largest velocity ever written, and the hero riding a vehicle stayed smeared though he does not move.
+    const uint32_t clear_format = (Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF;
     bool rect_clear = !msaa && (initiator & 0x3F) == 8 && (initiator >> 16) == 3 &&
-                      Register(g::XE_GPU_REG_RB_COLOR_MASK) == 0xFFFF &&
-                      ((Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF) <= 1;
+                      Register(g::XE_GPU_REG_RB_COLOR_MASK) == 0xFFFF && (clear_format <= 1 || clear_format == 4);
     for (uint32_t j = 0; j < 4 && rect_clear; ++j) {
       float v;
       std::memcpy(&v, &registers_[0x4400 + j], 4);
-      rect_clear = v >= 0.0f && v <= 1.0f;
+      rect_clear = clear_format == 4 ? (std::isfinite(v) && v >= -32.0f && v <= 32.0f) : (v >= 0.0f && v <= 1.0f);
     }
     // Gears of War 2 fills each shadow map with the far plane before drawing it: one rectangle, depth-only, depth
     // written with ALWAYS (depthcontrol 00000076), through a vertex shader of its own that is not in the library.
@@ -1897,9 +1900,22 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         color |= uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)) << (j * 8);
       }
     }
+    // A k_16_16 target: c0's x and y as its EDRAM bits (16-bit fixed point, value / 32 * 32767), passed as such
+    // (bit 31 of RB_COPY_CONTROL, SDK patch 0040).
+    bool color_as_bits = false;
+    if (!msaa && ((base.rb_color_info[0] >> 16) & 0xF) == 4) {
+      color = 0;
+      for (uint32_t j = 0; j < 2; ++j) {
+        float v;
+        std::memcpy(&v, &registers_[0x4400 + j], 4);
+        const int32_t q = int32_t(std::lround(std::clamp(v / 32.0f, -1.0f, 1.0f) * 32767.0f));
+        color |= uint32_t(uint16_t(int16_t(q))) << (j * 16);
+      }
+      color_as_bits = true;
+    }
     if (c0_written) {
       rex::x360::RegistrosCopia c = base;
-      c.rb_copy_control = 0u | (1u << 8) | kNullCommand;
+      c.rb_copy_control = 0u | (1u << 8) | kNullCommand | (color_as_bits ? 1u << 31 : 0u);
       c.rb_color_clear = color;
       c.rb_color_clear_lo = 0;
       destinos_->Copiar(c);
