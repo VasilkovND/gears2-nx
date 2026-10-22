@@ -1,0 +1,35 @@
+diff -ru a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+--- a/src/system/xsocket.cpp	2026-10-22 11:35:59
++++ b/src/system/xsocket.cpp	2026-10-22 11:36:26
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cerrno>
+ #include <cstring>
+ 
+ #include <rex/kernel/xam/module.h>
+@@ -54,8 +55,12 @@
+ 
+   native_handle_ = socket(af, type, proto);
+   if (native_handle_ == -1) {
++    // Logged: on the Switch a socket fails until libnx's socket service is up (socketInitialize), and Gears of War 2
++    // needs one even for its single-player campaign (it runs as a listen server).
++    REXLOG_WARN("XSocket: socket({}, {}, {}) failed: errno {}", int(af), int(type), int(proto), errno);
+     return X_STATUS_UNSUCCESSFUL;
+   }
++  REXLOG_INFO("XSocket: socket({}, {}, {}) = {}", int(af), int(type), int(proto), int(native_handle_));
+ 
+   return X_STATUS_SUCCESS;
+ }
+@@ -112,8 +117,10 @@
+ X_STATUS XSocket::Bind(N_XSOCKADDR_IN* name, int name_len) {
+   int ret = bind(native_handle_, (sockaddr*)name, name_len);
+   if (ret < 0) {
++    REXLOG_WARN("XSocket: bind({}) to port {} failed: errno {}", int(native_handle_), ntohs(name->sin_port), errno);
+     return X_STATUS_UNSUCCESSFUL;
+   }
++  REXLOG_INFO("XSocket: bind({}) to port {}", int(native_handle_), ntohs(name->sin_port));
+ 
+   bound_ = true;
+   bound_port_ = name->sin_port;

@@ -22,6 +22,10 @@
 #include <string>
 #include <system_error>
 
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
+
 #include "gow2_cpu.h"
 #include "gow2_gpu.h"
 
@@ -39,6 +43,16 @@ class Gears2App : public rex::ReXApp {
   // No Xenos emulation: gow2_gpu.cpp reads the game's command ring and draws with the deko3d renderer.
   void OnPreSetup(rex::RuntimeConfig& config) override {
     if (!config.graphics) config.graphics = gow2::gpu::CreateGraphicsSystem();
+#if defined(__SWITCH__)
+    // libnx's BSD sockets. Gears of War 2 runs even its single-player campaign as a listen server: without a socket
+    // the map never loads and the player is left in the empty front-end map (dark, only effects and the HUD).
+    const Result rc = socketInitializeDefault();
+    if (R_FAILED(rc)) {
+      REXLOG_WARN("gow2: socketInitializeDefault failed: 0x{:X} (no sockets: the campaign may not load)", rc);
+    } else {
+      REXLOG_INFO("gow2: sockets ready (libnx BSD)");
+    }
+#endif
   }
 
   // game_data_root is the folder with default.xex (ConstructRuntime checks it).
