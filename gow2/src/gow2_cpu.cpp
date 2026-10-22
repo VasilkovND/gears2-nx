@@ -15,7 +15,11 @@
 #include <switch.h>
 #endif
 
-REXCVAR_DEFINE_BOOL(gow2_msr_cerrojo_global, false, "Gears2",
+// GOW2_MSR_GLOBAL_DEFAULT=1 builds a variant with the codegen's global mutex by default (to compare).
+#ifndef GOW2_MSR_GLOBAL_DEFAULT
+#define GOW2_MSR_GLOBAL_DEFAULT 0
+#endif
+REXCVAR_DEFINE_BOOL(gow2_msr_cerrojo_global, GOW2_MSR_GLOBAL_DEFAULT != 0, "Gears2",
                     "Las regiones con interrupciones apagadas del codigo recompilado (mtmsrd) como un mutex global "
                     "del proceso, como las genera el codegen. false = estado por hilo (los atomicos ya son CAS)");
 

@@ -33,6 +33,12 @@ add_executable(gow2
 )
 
 gow2_setup_target(gow2)
+# A variant with the mtmsrd regions as the codegen's process-wide mutex by default (src/gow2_cpu.cpp), to compare.
+option(GOW2_MSR_GLOBAL "The mtmsrd regions as one global mutex by default" OFF)
+if(GOW2_MSR_GLOBAL)
+    set_source_files_properties(src/gow2_cpu.cpp PROPERTIES COMPILE_DEFINITIONS GOW2_MSR_GLOBAL_DEFAULT=1)
+    message(STATUS "gow2: mtmsrd regions as one global mutex by default")
+endif()
 rexglue_switch_add_deko3d(gow2)
 target_compile_definitions(gow2 PRIVATE GOW2_DEKO3D=1)
 target_include_directories(gow2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../shaders ${REXSDK_DIR}/thirdparty/xxHash)

@@ -1,0 +1,13 @@
+diff -ru a/include/rex/ppc/context.h b/include/rex/ppc/context.h
+--- a/include/rex/ppc/context.h	2026-10-22 10:54:53
++++ b/include/rex/ppc/context.h	2026-10-22 10:54:54
+@@ -181,7 +181,8 @@
+    * VMX every few instructions) paid it many times per sample. With FZ fixed the only difference is that scalar
+    * results below 1.2e-38 become 0.
+    */
+-#if defined(__SWITCH__)
++// REX_SWITCH_VARIABLE_FLUSH builds the guest's own switches back (to compare: Gears of War 2 culled its whole world).
++#if defined(__SWITCH__) && !defined(REX_SWITCH_VARIABLE_FLUSH)
+   static constexpr bool kFixedFlush = true;
+ #else
+   static constexpr bool kFixedFlush = false;

@@ -70,11 +70,19 @@ fi
 # changes.
 if [ ! -f gow2/out/sw/build.ninja ] || [ "${RECONFIGURE:-0}" = 1 ]; then
   echo "== configure"
-  cmake -S gow2 -B gow2/out/sw -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  # ccache (brew install ccache), when there: a unit compiled once is not compiled again in another build folder or
+  # after a change that is undone; the PCH needs the sloppiness below.
+  LAUNCHER=()
+  if command -v ccache > /dev/null; then
+    LAUNCHER=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+  fi
+  cmake -S gow2 -B gow2/out/sw -G Ninja -DCMAKE_BUILD_TYPE=Release "${LAUNCHER[@]}" \
     -DCMAKE_TOOLCHAIN_FILE="$ROOT/tools/switch/cmake/switch-devkitA64.cmake" \
     -DREXSDK_DIR="$ROOT/sdk" -DGOW2_CODEGEN_DIR="$ROOT/gow2/out/codegen" -DREXGLUE_SWITCH_DEKO3D=ON
 fi
 
+export CCACHE_SLOPPINESS="${CCACHE_SLOPPINESS:-pch_defines,time_macros,include_file_mtime,include_file_ctime}"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-15G}"
 echo "== build ($JOBS jobs)"
 cmake --build gow2/out/sw -j "$JOBS"
 ls -la gow2/out/sw/gow2.nro gow2/out/shaders/gow2_shaders.dslib gow2/out/shaders/shadercache_dksh.bin

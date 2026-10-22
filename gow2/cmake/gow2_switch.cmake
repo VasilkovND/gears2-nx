@@ -19,6 +19,12 @@ set(REXSDK_DIR "" CACHE PATH "Path to the rexglue-sdk(-nx) source tree")
 if(NOT REXSDK_DIR)
     get_filename_component(REXSDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../../sdk" ABSOLUTE)
 endif()
+# A build with the guest's own flush-to-zero switches (SDK patch 0014), to compare with the fixed flush mode.
+option(GOW2_VARIABLE_FLUSH "Keep the guest's FPCR flush-to-zero switches (no fixed flush mode)" OFF)
+if(GOW2_VARIABLE_FLUSH)
+    add_compile_definitions(REX_SWITCH_VARIABLE_FLUSH=1)
+    message(STATUS "gow2: variable flush mode (the guest's own switches)")
+endif()
 add_subdirectory("${REXSDK_DIR}" rexglue-sdk)
 message(STATUS "gow2: ReXGlue SDK from ${REXSDK_DIR}")
 
