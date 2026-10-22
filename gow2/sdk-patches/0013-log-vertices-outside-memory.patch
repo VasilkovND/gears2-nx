@@ -1,0 +1,18 @@
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 10:31:30
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 10:31:31
+@@ -1331,6 +1331,14 @@
+       necesarios = disponibles > inicio ? (disponibles - inicio) / enlace.zancada * enlace.zancada : 0;
+     }
+     if (!necesarios || direccion + inicio + necesarios > kMemoriaFisica) {
++      static uint32_t detallados = 0;
++      if (detallados < 8) {
++        ++detallados;
++        REXLOG_WARN("[deko3d] vertices fuera de la memoria: slot {} fetch {:08X} {:08X}, direccion {:08X}, vmin {} vmax {} "
++                    "zancada {} B, disponibles {} B, necesarios {} B, tipo {}, indices {}",
++                    enlace.ranura, d0, d1, uint32_t(direccion), vmin, vmax, enlace.zancada, disponibles, necesarios,
++                    tipo, con_indices ? n_indices : 0);
++      }
+       return Rechazar(12, "vertices fuera de la memoria");
+     }
+     origenes[b] = {memoria_->TranslatePhysical(uint32_t(direccion + inicio)), static_cast<xenos::Endian>(d1 & 0x3),

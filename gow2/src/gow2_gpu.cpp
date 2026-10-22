@@ -642,6 +642,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     REXLOG_INFO("[gpu] draws: {} geometry, {} sent to the renderer: {} drawn, {} rejected by it; skipped here: "
                 "{} without VS, {} without PS (the renderer logs each rejection cause once)",
                 geometria_, enviados_, dibujados, rechazados, sin_vs_, sin_ps_);
+    // Which unknown vertex shaders the skipped draws had, the most frequent first, with one draw's state each.
+    std::vector<std::pair<uint64_t, uint64_t>> skips(unknown_vs_skips_.begin(), unknown_vs_skips_.end());
+    std::sort(skips.begin(), skips.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < skips.size() && i < 4; ++i) {
+      REXLOG_INFO("[gpu] skipped without VS: {} draws with microcode {:016X}: {}", skips[i].second, skips[i].first,
+                  unknown_vs_sample_[skips[i].first]);
+    }
 #endif
   }
 
@@ -1204,6 +1211,18 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     if (!vs_) {
       ++sin_vs_;
+      {
+        const uint64_t key = XXH3_64bits(vs_microcode_.data(), vs_microcode_.size() * sizeof(uint32_t));
+        if (unknown_vs_skips_[key]++ == 0) {
+          unknown_vs_sample_[key] = fmt::format(
+              "{} words, prim {} count {}, source {}, color0 {:08X} mask {:04X}, depth {:08X} control {:08X}, mode {}, "
+              "msaa {}, PS n{}",
+              vs_microcode_.size(), initiator & 0x3F, initiator >> 16, (initiator >> 6) & 0x3,
+              Register(g::XE_GPU_REG_RB_COLOR_INFO), Register(g::XE_GPU_REG_RB_COLOR_MASK),
+              Register(g::XE_GPU_REG_RB_DEPTH_INFO), Register(g::XE_GPU_REG_RB_DEPTHCONTROL),
+              Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7, msaa, ps_ ? int(ps_->numero) : -1);
+        }
+      }
       // A real draw whose VS was not identified (not a Direct3D clear): which microcode, once each.
       if (!msaa && unknown_vs_logged_.size() < 16) {
         const uint64_t key = XXH3_64bits(vs_microcode_.data(), vs_microcode_.size() * sizeof(uint32_t));
@@ -1938,6 +1957,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint64_t generacion_vs_ = 0, generacion_constantes_vs_ = 0, generacion_constantes_ps_ = 0;
   uint64_t generacion_fetch_ = 0, generacion_encuadre_ = 0;
   uint64_t geometria_ = 0, enviados_ = 0, sin_vs_ = 0, sin_ps_ = 0;
+  std::unordered_map<uint64_t, uint64_t> unknown_vs_skips_;          // microcode hash -> draws skipped
+  std::unordered_map<uint64_t, std::string> unknown_vs_sample_;      // one draw's state each
   std::array<uint64_t, 16> color_formats_{};
   std::array<uint64_t, 2> depth_formats_{};
   std::array<uint64_t, 32> primitive_types_{};
