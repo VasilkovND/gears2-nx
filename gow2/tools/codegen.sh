@@ -12,7 +12,8 @@
 #      generator), so the generated code is the same.
 #   3. The manifest: the PC port's, with its hints, plus codegen/names.toml (names for the functions we hook).
 #   4. rexglue codegen, then the PC port's fixes: patch_switch_traps.py (jump tables and unresolved branches become
-#      dispatches), and the two its Android build uses on ARM: patch_memory_barriers.py (real fences for sync, lwsync,
+#      dispatches), patch_game_patches.py (its game patches, chosen in src/gow2_game_patches.cpp), and the two its
+#      Android build uses on ARM: patch_memory_barriers.py (real fences for sync, lwsync,
 #      eieio, isync) and patch_spin_hints.py (an ISB pause for the delay hints of spin loops). BARRIERS=0 skips the
 #      fences (to compare).
 set -euo pipefail
@@ -111,7 +112,8 @@ done
 # 4. Codegen (re-run only when an input changed) and the generated-code fixes.
 STAMP="$CG/inputs.sha"
 INPUTS=$( (cat "$CG/game/default.xex" "$CG/gow2_manifest.toml" "$CG"/hints/*.toml "$REXGLUE" \
-  "$PC"/tools/patch_switch_traps.py "$PC"/tools/patch_memory_barriers.py "$PC"/tools/patch_spin_hints.py; echo "barriers=$BARRIERS") \
+  "$PC"/tools/patch_switch_traps.py "$PC"/tools/patch_game_patches.py "$PC"/tools/patch_memory_barriers.py \
+  "$PC"/tools/patch_spin_hints.py; echo "barriers=$BARRIERS") \
   | shasum -a 256 | cut -d' ' -f1)
 if [ "$(cat "$STAMP" 2>/dev/null)" != "$INPUTS" ] || [ ! -f "$CG/generated/default/sources.cmake" ]; then
   # Generated and fixed in a staging folder, then only the files whose text changed are copied over generated/:
@@ -128,6 +130,11 @@ if [ "$(cat "$STAMP" 2>/dev/null)" != "$INPUTS" ] || [ ! -f "$CG/generated/defau
   echo "== generated-code fixes (gears-of-war-2-pc-port)"
   (cd "$ST" && python3 "$PC/tools/patch_switch_traps.py" "generated/default/*.cpp") > "$CG/patch_switch_traps.log"
   tail -3 "$CG/patch_switch_traps.log"
+  # The game patches the PC port carries (xenia-canary's for this executable), each behind Gow2GamePatch(id):
+  # src/gow2_game_patches.cpp turns them on or off. The one that matters here is id 1, GUseTilingMode = FALSE: the PC
+  # and Android builds always run without predicated tiling, and with it the Switch build drew no world at all.
+  (cd "$ST" && python3 "$PC/tools/patch_game_patches.py" "generated/default/*.cpp") > "$CG/patch_game_patches.log"
+  tail -1 "$CG/patch_game_patches.log"
   if [ "$BARRIERS" = 1 ]; then
     (cd "$ST" && python3 "$PC/tools/patch_memory_barriers.py" generated/default/*.cpp) > "$CG/patch_memory_barriers.log"
     tail -3 "$CG/patch_memory_barriers.log"

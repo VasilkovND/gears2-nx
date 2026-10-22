@@ -27,6 +27,7 @@ add_executable(gow2
     src/main.cpp
     src/gow2_gpu.cpp
     src/gow2_shaders.cpp
+    src/gow2_game_patches.cpp
     src/gow2_cpu.cpp
     # The shader library reader, shared with the PC tools (shaders/).
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/ds_shader_library.cpp
