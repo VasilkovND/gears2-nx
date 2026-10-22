@@ -1213,6 +1213,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (!msaa && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x2)) {
       const uint32_t zfunc = (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) >> 4) & 0x7;
       if (zfunc == 4 || zfunc == 6) ++depth_greater_; else if (zfunc == 1 || zfunc == 3) ++depth_less_;
+      // And per depth buffer (its EDRAM base): Gears of War 2's scene goes GREATER (far = 0), its shadow maps LESS
+      // (far = 1). With one direction for all, the shadow maps were cleared to 0, nothing could be drawn into them,
+      // every pixel came out in shadow and the modulated shadows darkened the whole world to black.
+      auto& [mayor, menor] = depth_direction_[Register(g::XE_GPU_REG_RB_DEPTH_INFO) & 0xFFF];
+      if (zfunc == 4 || zfunc == 6) ++mayor; else if (zfunc == 1 || zfunc == 3) ++menor;
     }
     // Direct3D clears a target by drawing over it with its own internal shaders (not created by the game, so not in
     // the library), through the same EDRAM seen as a multisampled surface of half the pitch. Done as the renderer's
@@ -1544,9 +1549,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       const uint32_t ref_mask = r[g::XE_GPU_REG_RB_STENCILREFMASK];
       stencil = ref_mask & (ref_mask >> 16) & 0xFF;
     }
-    const uint32_t depth_value = (reversed ? 0u : 0xFFFFFF00u) | stencil;
     constexpr uint32_t kNullCommand = 3u << 20;  // CopyCommand::kNull: clear only, copy nothing
     auto clear_depth_at = [&](uint32_t edram_base, std::string& what) {
+      // The direction of the draws into this depth buffer when it has any, the frame's otherwise.
+      bool reversed_here = reversed;
+      if (auto it = depth_direction_.find(edram_base & 0xFFF);
+          it != depth_direction_.end() && it->second.first != it->second.second) {
+        reversed_here = it->second.first > it->second.second;
+      }
+      const uint32_t depth_value = (reversed_here ? 0u : 0xFFFFFF00u) | stencil;
       rex::x360::RegistrosCopia c = base;
       c.rb_depth_info = (depth_info & ~uint32_t(0xFFF)) | (edram_base & 0xFFF);
       c.rb_copy_control = 4u | (1u << 9) | kNullCommand;
@@ -2028,6 +2039,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection
   uint32_t auto_captures_ = 0, auto_dumps_ = 0;
   uint64_t depth_greater_ = 0, depth_less_ = 0, clears_ = 0, clears_logged_ = 0, msaa_draws_ = 0;
+  // Per depth buffer EDRAM base: draws testing GREATER/GEQUAL and LESS/LEQUAL into it (EmulateClear's far value).
+  std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> depth_direction_;
   FrameState frame_;
   bool telemetry_ = false;
   bool hide_glow_ = false;  // sin_resplandor.flag
