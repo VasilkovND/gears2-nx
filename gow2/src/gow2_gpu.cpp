@@ -1105,10 +1105,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   static constexpr const char* kSkipModeNames[kSkipModes] = {
       "none (normal rendering)",
       "SAFE MODE: the renderer's NFS shortcuts off, nothing skipped",
-      "deferred lights (blend ONE+ONE, 01010101) and their stencil passes",
-      "additive effects (SRC_ALPHA+ONE, 00010106)",
-      "alpha-blended (SRC_ALPHA+INV_SRC_ALPHA: 00010706, 07060706)",
-      "quad lists (prim 13)",
+      "Gears of War 2: modulated shadows and other multiplying draws (source factor DST_COLOR, dest ZERO)",
+      "Gears of War 2: lights (everything drawn into 2D0 as format 12) and the multiplying draws",
+      "Gears of War 2: everything after the base pass (draws not into 2D0 format 3 with blend 00010001)",
+      "additive effects (SRC_ALPHA+ONE 00010106, ONE+ONE 01010101)",
       "everything blended (blend other than 00010001)",
       "alpha-tested (RB_COLORCONTROL alpha test on)",
   };
@@ -1137,13 +1137,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const uint32_t mask = Register(g::XE_GPU_REG_RB_COLOR_MASK);
     const uint32_t prim = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR) & 0x3F;
     const uint32_t colorctl = Register(g::XE_GPU_REG_RB_COLORCONTROL);
+    const uint32_t color0_base = Register(g::XE_GPU_REG_RB_COLOR_INFO) & 0xFFF;
+    const uint32_t color0_format = (Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF;
+    // Color = source * destination: Gears of War 2's modulated shadows (01000008) multiply the scene by the shadow.
+    const bool multiplying = (mask & 0xF) && (blend & 0x1F) == 8 && ((blend >> 8) & 0x1F) == 0;
+    (void)prim;
     switch (skip_mode_ - 1) {  // mode 1 is the safe mode, which skips nothing
-      case 1:
-        // The light volumes add ONE+ONE; their stencil-marking passes write no color (mask 0) in depth-only mode.
-        return blend == 0x01010101 || (!(mask & 0xF) && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x1));
-      case 2: return (mask & 0xF) && blend == 0x00010106;
-      case 3: return (mask & 0xF) && (blend == 0x00010706 || blend == 0x07060706);
-      case 4: return prim == 13;
+      case 1: return multiplying;
+      case 2: return multiplying || (color0_base == 0x2D0 && color0_format == 12);
+      case 3: return (mask & 0xF) && !(color0_base == 0x2D0 && color0_format == 3 && blend == 0x00010001);
+      case 4: return (mask & 0xF) && (blend == 0x00010106 || blend == 0x01010101);
       case 5: return (mask & 0xF) && blend != 0x00010001;
       case 6: return ((colorctl >> 3) & 0x1) && (colorctl & 0x7) != 7;
       default: return false;
