@@ -121,6 +121,10 @@ REXCVAR_DECLARE(bool, nfsmw_dk_borrado_color_aplazado);
 REXCVAR_DECLARE(bool, nfsmw_dk_borrado_z_aplazado);
 
 // Automatic data collection while the renderer is being brought up: nothing to press on the console.
+// Set by the GetData hook (gow2_perf_hooks.cpp) while Direct3D answers "not yet": Unreal's rendering thread is waiting
+// for a query, so OcclusionPoll answers the ones still being counted instead of letting it wait for the GPU.
+std::atomic<bool> g_gow2_query_waited{false};
+
 REXCVAR_DEFINE_INT32(gow2_auto_captura_s, 5, "Gears2",
                      "Cada cuantos segundos se guarda una captura reducida (640x360) en capturas/auto_NNNN.bmp; 0 = nunca");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_primero_s, 120, "Gears2",
@@ -138,6 +142,10 @@ REXCVAR_DEFINE_BOOL(gow2_oclusion_real, true, "Gears2",
 REXCVAR_DEFINE_INT32(gow2_oclusion_espera_ms, 40, "Gears2",
                      "Consultas de oclusion reales: milisegundos desde el final de una consulta que el juego puede "
                      "esperar su resultado; pasado ese tiempo se le contesta visible");
+REXCVAR_DEFINE_INT32(gow2_oclusion_sin_esperar_ms, 8, "Gears2",
+                     "Consultas de oclusion reales: cuando el juego se pone a esperar un resultado, las consultas "
+                     "terminadas hace al menos estos milisegundos que la GPU aun no conto se contestan visibles al "
+                     "momento (sin parar el fotograma). -1 = esperar hasta gow2_oclusion_espera_ms");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(gow2_auto_volcados_max, 4, "Gears2", "Volcados automaticos como mucho (0 = ninguno)");
@@ -695,11 +703,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       uint64_t q[5];
       destinos_->EstadisticasOclusion(q);
       REXLOG_INFO("[gpu] occlusion: {} queries counted on the GPU, {} without room; {} answered with their count ({} "
-                  "of them hidden, {:.1f} ms after their end on average, {} samples, max {}), {} answered visible after "
-                  "waiting too long, {} waiting",
+                  "of them hidden, {:.1f} ms after their end on average, {} samples, max {}), {} answered visible when "
+                  "the game waited for them, {} after waiting too long, {} waiting",
                   q[0], q[1], queries_answered_, queries_hidden_,
                   queries_answered_ ? double(queries_wait_us_) / 1000.0 / double(queries_answered_) : 0.0, q[3], q[4],
-                  queries_timed_out_, pending_queries_.size());
+                  queries_not_waited_, queries_timed_out_, pending_queries_.size());
     }
     // Which unknown vertex shaders the skipped draws had, the most frequent first, with one draw's state each.
     std::vector<std::pair<uint64_t, uint64_t>> skips(unknown_vs_skips_.begin(), unknown_vs_skips_.end());
@@ -796,6 +804,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         // resolved (clears and, once the ring decoder feeds draws, the frame). Handheld 1280x720.
         ++swaps_;
         counter_.fetch_add(1, std::memory_order_relaxed);
+        if (!depth_vs_frame_.empty()) {
+          depth_vs_last_.swap(depth_vs_frame_);
+          depth_vs_frame_.clear();
+        }
         if (EnsureRenderer()) {
           // VdSwap describes the frontbuffer in fetch constant 0; an empty TexturaSwap finds nothing (black).
           destinos_->Presentar(presenter_.get(), rex::x360::LeerTexturaSwap(registers_.data()), 1280, 720);
@@ -803,15 +815,31 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
             REXCVAR_SET(switch_omitir_pedido, false);
             skip_mode_ = ((skip_mode_ ? skip_mode_ : skip_resume_) + 1) % kSkipModes;
             skip_resume_ = 0;
+            if (skip_mode_ == kSkipModesFixed) {
+              // The candidates: last frame's depth-writing vertex shaders, the most frequent first.
+              std::vector<std::pair<uint32_t, uint32_t>> list(depth_vs_last_.begin(), depth_vs_last_.end());
+              std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+              search_vs_.clear();
+              std::string names;
+              for (const auto& [vs, draws] : list) {
+                if (search_vs_.size() == kSearchModes) break;
+                search_vs_.push_back(vs);
+                names += fmt::format(" n{} ({} draws)", vs, draws);
+              }
+              REXLOG_INFO("[gpu] search: {} vertex shaders write the scene's depth:{}", search_vs_.size(), names);
+            }
+            if (skip_mode_ >= kSkipModesFixed && skip_mode_ - kSkipModesFixed >= search_vs_.size()) {
+              skip_mode_ = 0;
+            }
             SetNfsShortcuts(skip_mode_ != 1);
             REXCVAR_SET(nfsmw_dk_todas_las_salidas, skip_mode_ == 9);
             REXCVAR_SET(nfsmw_dk_gamma_lineal, skip_mode_ == 10);
-            REXLOG_INFO("[gpu] skip mode {}: {} (the next capture shows it)", skip_mode_, kSkipModeNames[skip_mode_]);
+            REXLOG_INFO("[gpu] skip mode {}: {} (the next capture shows it)", skip_mode_, SkipModeName());
             capture_after_skip_ = 3;  // a few frames later, when the change is on screen
           }
           if (capture_after_skip_ && --capture_after_skip_ == 0) {
             SaveCapture();
-            REXLOG_INFO("[gpu] capture above: skip mode {} ({})", skip_mode_, kSkipModeNames[skip_mode_]);
+            REXLOG_INFO("[gpu] capture above: skip mode {} ({})", skip_mode_, SkipModeName());
             // Gears of War 2: the mode stays on screen until the next press (one frame was too short to see it).
           }
           if (REXCVAR_GET(switch_volcado_pedido)) {
@@ -1136,8 +1164,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   // --- Draw-skipping modes (ZL + ZR + Right), to find which kind of draw makes an artifact: each press goes to the next
   // mode, logs it and takes a capture a few frames later. Classified by the blend of target 0 (RB_BLENDCONTROL0) and the
   // primitive, as the frame traces show Dead Space 2's draws.
-  static constexpr uint32_t kSkipModes = 11;
-  static constexpr const char* kSkipModeNames[kSkipModes] = {
+  static constexpr uint32_t kSkipModesFixed = 11;
+  // Then the search modes: kSkipModesFixed + i skips only the i-th vertex shader of the scene's depth-writing draws
+  // (the most frequent first, as counted in the frame before the first search mode), to find which one draws the
+  // giant triangles of level 2. After the last one, back to normal rendering.
+  static constexpr uint32_t kSearchModes = 32;
+  static constexpr uint32_t kSkipModes = kSkipModesFixed + kSearchModes;
+  static constexpr const char* kSkipModeNames[kSkipModesFixed] = {
       "none (normal rendering)",
       "SAFE MODE: the renderer's NFS shortcuts off, nothing skipped",
       "Gears of War 2: modulated shadows and other multiplying draws (source factor DST_COLOR, dest ZERO)",
@@ -1169,8 +1202,17 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     REXCVAR_SET(nfsmw_dk_borrado_z_aplazado, on);
   }
 
+  std::string SkipModeName() const {
+    if (skip_mode_ < kSkipModesFixed) return kSkipModeNames[skip_mode_];
+    return fmt::format("search {} of {}: vertex shader n{} not drawn", skip_mode_ - kSkipModesFixed + 1,
+                       search_vs_.size(), search_vs_[skip_mode_ - kSkipModesFixed]);
+  }
+
   bool SkippedByMode() const {
     namespace g = rex::graphics;
+    if (skip_mode_ >= kSkipModesFixed) {
+      return vs_ && vs_->numero == search_vs_[skip_mode_ - kSkipModesFixed];
+    }
     const uint32_t blend = Register(g::XE_GPU_REG_RB_BLENDCONTROL0);
     const uint32_t mask = Register(g::XE_GPU_REG_RB_COLOR_MASK);
     const uint32_t prim = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR) & 0x3F;
@@ -1342,6 +1384,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (skip_mode_ > 1 && SkippedByMode()) {
       ++skipped_by_mode_;
       return;
+    }
+    // The search modes' candidates: vertex shaders writing depth while drawing color and depth.
+    if ((Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4) &&
+        depth_vs_frame_.size() < 256) {
+      ++depth_vs_frame_[vs_->numero];
     }
     if (IsGlowShader(vs_)) {
       if (glow_draws_logged_ < 12) {
@@ -2108,6 +2155,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     const auto now = std::chrono::steady_clock::now();
     const auto limit = std::chrono::milliseconds(std::max(REXCVAR_GET(gow2_oclusion_espera_ms), 0));
+    const int32_t no_wait_ms = REXCVAR_GET(gow2_oclusion_sin_esperar_ms);
+    const bool game_waits = g_gow2_query_waited.exchange(false, std::memory_order_acq_rel) && no_wait_ms >= 0;
     // The ring has been quiet for a while with a query waited for: the game may be waiting for one whose work is still
     // being recorded (it would never be submitted).
     if (destinos_ && now - pending_queries_.front().ended >= std::chrono::milliseconds(1) &&
@@ -2119,7 +2168,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       const PendingQuery& q = pending_queries_[done];
       uint64_t samples = 0;
       const bool counted = destinos_ && destinos_->ResultadoOclusion(q.ticket, samples);
-      if (!counted && now - q.ended < limit) {
+      const bool answer_now = game_waits && now - q.ended >= std::chrono::milliseconds(no_wait_ms);
+      if (!counted && now - q.ended < limit && !answer_now) {
         break;  // the later ones are in later work
       }
       auto* counts = memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(q.address);
@@ -2134,7 +2184,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       std::atomic_thread_fence(std::memory_order_release);
       counts->ZPass_A = n;  // the mark goes last
       if (!counted) {
-        ++queries_timed_out_;
+        ++(now - q.ended < limit ? queries_not_waited_ : queries_timed_out_);
       } else {
         ++queries_answered_;
         if (n == 0) ++queries_hidden_;
@@ -2206,6 +2256,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::deque<PendingQuery> pending_queries_;
   std::chrono::steady_clock::time_point ring_activity_;  // the ring thread's last batch of packets  // real occlusion queries the GPU has not counted yet, oldest first
   uint64_t queries_answered_ = 0, queries_hidden_ = 0, queries_timed_out_ = 0, queries_wait_us_ = 0;
+  uint64_t queries_not_waited_ = 0;  // answered visible at once because the game was waiting
   uint64_t rect_lists_ = 0;
   uint32_t rect_unexpanded_logged_ = 0;
   double next_auto_capture_s_ = 10, next_auto_dump_s_ = -1;  // AutomaticCollection
@@ -2226,6 +2277,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint32_t vs_physical_ = 0;
   uint32_t syncs_reported_ = 0;
   uint32_t skip_mode_ = 0, capture_after_skip_ = 0, skip_resume_ = 0;
+  std::unordered_map<uint32_t, uint32_t> depth_vs_frame_, depth_vs_last_;  // search modes: VS number -> draws
+  std::vector<uint32_t> search_vs_;
   uint64_t prepass_skipped_ = 0;
   uint64_t skipped_by_mode_ = 0;
   uint64_t clears_logged_1x_ = 0;

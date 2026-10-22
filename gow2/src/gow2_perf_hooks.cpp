@@ -51,10 +51,15 @@ REX_HOOK_RAW(sub_82977688) {
   if (ctx.r3.u32 == 1) DormirEsperando();
 }
 
+extern std::atomic<bool> g_gow2_query_waited;  // gow2_gpu.cpp
+
 REX_EXTERN(__imp__sub_829783A8);
 REX_HOOK_RAW(sub_829783A8) {
   __imp__sub_829783A8(ctx, base);
-  if (ctx.r3.u32 == 1) DormirEsperando();  // S_FALSE: not there yet
+  if (ctx.r3.u32 == 1) {  // S_FALSE: not there yet
+    g_gow2_query_waited.store(true, std::memory_order_release);
+    DormirEsperando();
+  }
 }
 
 REX_EXTERN(__imp__sub_82955830);
