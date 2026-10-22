@@ -1,0 +1,12 @@
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 14:53:20
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 14:53:20
+@@ -1054,7 +1054,7 @@
+     const uint32_t info = p.registros[gr::XE_GPU_REG_RB_COLOR_INFO];
+     if (ImagenDk* escena = DestinoColor(info & 0xFFF, 3, p.registros[gr::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF)) {
+       HacerBorradoPendiente(*escena);
+-      VolcarResuelta(escena->imagen, 0xFEED0000u | (info & 0xFFF), 3);
++      VolcarResuelta(*escena, 0xFEED0000u | (info & 0xFFF), 3);
+       OlvidarEstado();
+       g_.pase_valido = false;
+     }
