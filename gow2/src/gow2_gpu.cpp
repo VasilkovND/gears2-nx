@@ -86,6 +86,8 @@ void gow2_log_main_thread();  // src/gow2_guards.cpp
 
 REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/switch/switch_input_driver.cpp)
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
+REXCVAR_DECLARE(bool, nfsmw_dk_todas_las_salidas);  // skip mode 9 (SDK patch 0033)
+REXCVAR_DECLARE(bool, nfsmw_dk_gamma_lineal);       // skip mode 10 (SDK patch 0033)
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
 // The SDK renderer's shadow-pass shortcuts (sdk/src/x360/deko/destinos.cpp; the SDK keeps their nfsmw_ names): both
 // drop colorless draws that alpha-test or discard, which here are ordinary depth-only draws. Off for Dead Space 2.
@@ -765,6 +767,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
             skip_mode_ = ((skip_mode_ ? skip_mode_ : skip_resume_) + 1) % kSkipModes;
             skip_resume_ = 0;
             SetNfsShortcuts(skip_mode_ != 1);
+            REXCVAR_SET(nfsmw_dk_todas_las_salidas, skip_mode_ == 9);
+            REXCVAR_SET(nfsmw_dk_gamma_lineal, skip_mode_ == 10);
             REXLOG_INFO("[gpu] skip mode {}: {} (the next capture shows it)", skip_mode_, kSkipModeNames[skip_mode_]);
             capture_after_skip_ = 3;  // a few frames later, when the change is on screen
           }
@@ -1095,7 +1099,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   // --- Draw-skipping modes (ZL + ZR + Right), to find which kind of draw makes an artifact: each press goes to the next
   // mode, logs it and takes a capture a few frames later. Classified by the blend of target 0 (RB_BLENDCONTROL0) and the
   // primitive, as the frame traces show Dead Space 2's draws.
-  static constexpr uint32_t kSkipModes = 8;
+  static constexpr uint32_t kSkipModes = 11;
   static constexpr const char* kSkipModeNames[kSkipModes] = {
       "none (normal rendering)",
       "SAFE MODE: the renderer's NFS shortcuts off, nothing skipped",
@@ -1105,6 +1109,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       "additive effects (SRC_ALPHA+ONE 00010106, ONE+ONE 01010101)",
       "everything blended (blend other than 00010001)",
       "alpha-tested (RB_COLORCONTROL alpha test on)",
+      "Gears of War 2: no depth prepass (depth-only draws writing the scene's depth, base 000)",
+      "Gears of War 2: vertex shaders with every interpolator (nfsmw_dk_todas_las_salidas)",
+      "Gears of War 2: gamma textures read as linear (nfsmw_dk_gamma_lineal; textures loaded from now on)",
   };
   // The renderer's NFS shortcuts (see the declarations at the top): on as the SDK defaults, off in safe mode.
   static void SetNfsShortcuts(bool on) {
@@ -1143,6 +1150,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       case 4: return (mask & 0xF) && (blend == 0x00010106 || blend == 0x01010101);
       case 5: return (mask & 0xF) && blend != 0x00010001;
       case 6: return ((colorctl >> 3) & 0x1) && (colorctl & 0x7) != 7;
+      case 7:
+        return (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5 &&
+               (Register(g::XE_GPU_REG_RB_DEPTH_INFO) & 0xFFF) == 0 && (Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0x4);
       default: return false;
     }
   }

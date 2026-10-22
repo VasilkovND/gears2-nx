@@ -1,0 +1,47 @@
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 14:59:51
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 14:59:51
+@@ -60,6 +60,9 @@
+                     "Quitar el desenfoque radial de la composicion final. Son 7 de los 12 muestreos del "
+                     "unico cuadrilatero a pantalla completa del posproceso (1,5-2,0 ms reales). Se pierde "
+                     "el difuminado de los bordes al acelerar y con el NOS: la imagen queda mas nitida");
++REXCVAR_DEFINE_BOOL(nfsmw_dk_todas_las_salidas, false, "NFSMW",
++                    "deko3d (depuracion): los vertex shaders siempre con todos sus interpoladores, no solo los que lee "
++                    "el pixel shader");
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_sesgo_igualdad, true, "NFSMW",
+                     "deko3d: los dibujos de color que prueban la profundidad con GEQUAL o LEQUAL sin sesgo propio se "
+                     "acercan 4 unidades: pasan donde un pase previo de solo profundidad escribio la misma superficie "
+@@ -1654,7 +1657,10 @@
+   AntesDe3D();  // a transfer recorded since the pass began (a cubemap's faces) is finished first
+ 
+   // --- Shaders
+-  const DkShader* vs = ShaderDe(*p.vs, especializacion, ps ? InfoDe(*ps).interpoladores : 0u);
++  const DkShader* vs = ShaderDe(*p.vs, especializacion,
++                                REXCVAR_GET(nfsmw_dk_todas_las_salidas) ? kTodasLasSalidas
++                                : ps                                    ? InfoDe(*ps).interpoladores
++                                                                        : 0u);
+   const DkShader* fs = ps ? ShaderDe(*ps, especializacion, 0, variante_ps) : (fs_vacio_valido_ ? &fs_vacio_ : nullptr);
+   if (!vs || !fs) {
+     return Rechazar(60, "shader sin DKSH");
+diff -ru a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
+--- a/src/x360/deko/texturas.cpp	2026-10-22 14:59:51
++++ b/src/x360/deko/texturas.cpp	2026-10-22 14:59:51
+@@ -26,6 +26,8 @@
+                     "Renderizador nativo: sube los niveles de mip que trae el juego (como en la Xbox 360). false: solo "
+                     "el nivel base, como antes de la build 136")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_BOOL(nfsmw_dk_gamma_lineal, false, "NFSMW",
++                    "deko3d (depuracion): las texturas con gamma se leen como lineales (sin la vista sRGB)");
+ REXCVAR_DEFINE_INT32(nfsmw_nativo_anisotropico, 0, "NFSMW",
+                      "Renderizador nativo (25/09, build 179): filtrado anisotropico de las texturas del mundo "
+                      "(samplers lineales con mips). 0 = como la Xbox 360 (trilineal, borroso de lado y a lo lejos); "
+@@ -97,6 +99,9 @@
+ // the image's. All four components signed: the Snorm form. Red, green and blue gamma (alpha gamma or unsigned): the
+ // sRGB form (the Xbox 360's piecewise curve, approximated by sRGB). Anything else: None (read unsigned).
+ DkImageFormat FormatoVistaSigno(DkImageFormat formato, uint32_t signos) {
++  if (REXCVAR_GET(nfsmw_dk_gamma_lineal) && (signos & 0x3F) == 0x3F) {
++    return DkImageFormat_None;
++  }
+   if (signos == 0x55) {  // 1, 1, 1, 1
+     switch (formato) {
+       case DkImageFormat_R8_Unorm: return DkImageFormat_R8_Snorm;
