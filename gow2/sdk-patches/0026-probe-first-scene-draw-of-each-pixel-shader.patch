@@ -1,0 +1,53 @@
+diff -ru a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h	2026-10-22 14:03:21
++++ b/include/rex/x360/deko/render.h	2026-10-22 14:03:21
+@@ -478,6 +478,8 @@
+   std::vector<std::pair<uint64_t, std::string>> novedades_;
+   size_t novedades_pos_ = 0;
+   void VolcarNovedades(uint64_t trabajo);
++  // Black scene diagnostics: the pixel shaders whose first scene draw was already described.
++  std::set<uint32_t> sondas_ps_;
+   uint64_t fotograma_ = 1;
+   uint64_t serie_imagenes_ = 0;
+ 
+diff -ru a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp	2026-10-22 14:03:21
++++ b/src/x360/deko/dibujos.cpp	2026-10-22 14:03:21
+@@ -2142,6 +2142,37 @@
+     }
+     ++dibujos_en_pase_;
+   }
++  // Black scene diagnostics: the first draw of each pixel shader into a k_2_10_10_10_FLOAT target (Gears of War 2's
++  // scene), 48 shaders at most: its constants c0-c15 and whether each texture's base and mips hold anything in guest
++  // memory (all zero = not loaded yet: it samples black).
++  if (ps && sondas_ps_.size() < 48 && ((r[gr::XE_GPU_REG_RB_COLOR_INFO] >> 16) & 0xF) == 3 &&
++      sondas_ps_.insert(ps->numero).second) {
++    std::string c;
++    for (uint32_t i = 0; i < 16; ++i) {
++      float v[4];
++      std::memcpy(v, r + kRegConstantesPs + i * 4, sizeof(v));
++      c += fmt::format(" c{}=({:.4g},{:.4g},{:.4g},{:.4g})", i, v[0], v[1], v[2], v[3]);
++    }
++    auto ocupada = [&](uint32_t direccion) -> const char* {
++      if (!direccion) return "sin";
++      const uint8_t* d = memoria_->TranslatePhysical(direccion & 0x1FFFFFFF);
++      for (uint32_t i = 0; i < 4096; ++i) {
++        if (d[i]) return "datos";
++      }
++      return "CEROS";
++    };
++    std::string t;
++    for (const SamplerShader& sampler : ps->samplers) {
++      if (sampler.registro >= 16) continue;
++      const uint32_t* fetch = r + kRegFetch + uint32_t(sampler.registro) * 6;
++      const uint32_t base = (fetch[1] >> 12) << 12, mips = (fetch[5] >> 12) << 12;
++      t += fmt::format(" s{} {:08X} {}x{} fmt {} signos {:02X} niveles {}-{} base {} mips {}", sampler.registro, base,
++                       (fetch[2] & 0x1FFF) + 1, ((fetch[2] >> 13) & 0x1FFF) + 1, fetch[1] & 0x3F,
++                       (fetch[0] >> 2) & 0xFF, (fetch[4] >> 2) & 0xF, (fetch[4] >> 6) & 0xF, ocupada(base),
++                       ocupada(mips));
++    }
++    REXLOG_INFO("[deko3d] sonda escena: PS n{} VS n{} cuenta {}:{} |{}", ps->numero, p.vs->numero, cuenta, t, c);
++  }
+   if (novedad_pares_.insert({p.vs->numero, ps ? ps->numero : UINT32_MAX}).second || !novedad_dibujo_.empty()) {
+     std::string linea = fmt::format("VS n{} PS {} tipo {} cuenta {}{}", p.vs->numero,
+                                     ps ? fmt::format("n{}", ps->numero) : std::string("-"), tipo, cuenta,
