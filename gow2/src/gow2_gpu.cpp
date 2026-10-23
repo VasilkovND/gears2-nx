@@ -167,6 +167,11 @@ REXCVAR_DEFINE_INT32(gow2_arboles, 1, "Gears2",
                      "Los arboles del nivel 2 (VS 38234053372F8F2F): 0 = no se dibujan (gow2_saltar_vs_rotos), 1 = tal cual, "
                      "2 = con las matrices de balanceo (c11-c22) cambiadas por la identidad, 3 = identidad y c10 = 0, "
                      "4 = solo c10 = 0");
+REXCVAR_DEFINE_BOOL(gow2_velocidad_sin_z, false, "Gears2",
+                    "Prueba: los dibujos del buffer de velocidades (PS 1929EAB6BE60FA77) sin test de profundidad contra "
+                    "la profundidad reducida (5A0, 640x360)");
+REXCVAR_DEFINE_BOOL(gow2_velocidad_prueba, true, "Gears2",
+                    "ZL+ZR+Right cambia gow2_velocidad_sin_z con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, false, "Gears2",
                     "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(gow2_auto_volcado_dibujos, 800, "Gears2",
@@ -840,6 +845,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         if (EnsureRenderer()) {
           // VdSwap describes the frontbuffer in fetch constant 0; an empty TexturaSwap finds nothing (black).
           destinos_->Presentar(presenter_.get(), rex::x360::LeerTexturaSwap(registers_.data()), 1280, 720);
+          if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(gow2_velocidad_prueba)) {
+            REXCVAR_SET(switch_omitir_pedido, false);
+            REXCVAR_SET(gow2_velocidad_sin_z, !REXCVAR_GET(gow2_velocidad_sin_z));
+            REXLOG_INFO("[gpu] velocity draws {} (the next capture shows it)",
+                        REXCVAR_GET(gow2_velocidad_sin_z) ? "WITHOUT depth test" : "with their depth test");
+            tree_capture_after_ = 3;
+          }
           if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(gow2_arboles_prueba)) {
             REXCVAR_SET(switch_omitir_pedido, false);
             REXCVAR_SET(gow2_arboles, (REXCVAR_GET(gow2_arboles) + 1) % 5);
@@ -851,7 +863,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
           }
           if (tree_capture_after_ && --tree_capture_after_ == 0) {
             SaveCapture();
-            REXLOG_INFO("[gpu] capture above: trees mode {}", REXCVAR_GET(gow2_arboles));
+            REXLOG_INFO("[gpu] capture above: trees mode {}, velocity depth test {}", REXCVAR_GET(gow2_arboles),
+                        REXCVAR_GET(gow2_velocidad_sin_z) ? "off" : "on");
           }
           if (REXCVAR_GET(switch_omitir_pedido)) {
             REXCVAR_SET(switch_omitir_pedido, false);
@@ -1600,6 +1613,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       request.generacion_encuadre = generacion_encuadre_;
       destinos_->EmpezarOclusion(probe_key);
     }
+    // gow2_velocidad_sin_z: the velocity buffer's draws without their depth test (z enable off for this draw).
+    const bool velocity_no_z = REXCVAR_GET(gow2_velocidad_sin_z) && ps_ &&
+                               ps_->huella_contenedor == UINT64_C(0x1929EAB6BE60FA77);
+    const uint32_t saved_depthcontrol = registers_[g::XE_GPU_REG_RB_DEPTHCONTROL];
+    if (velocity_no_z) {
+      registers_[g::XE_GPU_REG_RB_DEPTHCONTROL] = saved_depthcontrol & ~0x2u;
+      ++generacion_encuadre_;
+      request.generacion_encuadre = generacion_encuadre_;
+    }
     // gow2_arboles = 2: the trees' three sway matrices (c11-c22) replaced by the identity for this draw.
     std::array<uint32_t, 48> saved_sway{};
     std::array<uint32_t, 4> saved_c10{};
@@ -1628,6 +1650,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (tree_c10_zero) {
       for (uint32_t i = 0; i < 4; ++i) registers_[0x4000 + 10 * 4 + i] = saved_c10[i];
       ++generacion_constantes_vs_;
+    }
+    if (velocity_no_z) {
+      registers_[g::XE_GPU_REG_RB_DEPTHCONTROL] = saved_depthcontrol;
+      ++generacion_encuadre_;
     }
     if (probe) {
       const uint64_t ticket = destinos_->TerminarOclusionAsincrona(probe_key);
