@@ -13,18 +13,34 @@ a homebrew NRO, and frames are drawn by a native deko3d renderer from the game's
 
 Status: **1.0.0** — playable with the CPU overclocked (~27 fps on average, mostly 24-30 in fights); every shader of the
 game, read from the card on demand. Slow at stock clocks. What it took: [gow2/PORTING.md](gow2/PORTING.md).
+
 ## Performance (measured on a console)
 
-1.0.0 (2026-10-23, levels 1 and 2 for 26 minutes, handheld, CPU 1785 / GPU 614.4 / RAM 1600 MHz, with the profiler's
-stack sampler on, which costs ~8 %): **27.3 fps on average** in gameplay (145 windows of 10 s; 0.8.0: 24.9 by the
-same count), under 24 fps 15 % of the time (0.8.0: 43 %), median 29.9 (the game's cap is 30). The game thread is no
-longer the limit in fights: the GPU waits for it 1-6 ms per frame instead of 6-12. What changed: the recompiled code
-keeps the guest's registers in the host's registers between calls (tools/patch_local_regs.py).
+### 1.0.0
 
-0.8.1 (2026-10-22, level 2 forest with its trees, CPU 1785 / GPU 614.4 / RAM 1600 MHz): **25.6-28.7 fps**, ~1,150-1,500
-draws per frame, GPU ~34 ms per frame (scene ~20 ms), 8-10 µs to record a draw.
+**Playable: ~27 fps on average, mostly 24-30 in fights.** Played on 2026-10-23, levels 1 and 2 (26 minutes, plus a
+4-minute run through the level 2 forest), console handheld, sys-clk at **CPU 1785 / GPU 614.4 / RAM 1600 MHz**. The
+long run had the profiler's stack sampler on (it costs ~8 %), so the numbers are a little low.
 
-### 0.8.0
+| Where | Frame rate | Limit |
+| --- | --- | --- |
+| Levels 1-2, all gameplay (145 windows of 10 s) | **27.3 fps on average**, median 29.9; the slowest 10 % of the time under 24.1; under 24 fps 15 % of the time | — |
+| Quiet places, corridors | 28-30 (the game's own cap is 30) | — |
+| Fights | mostly 24-28 | GPU (it waits for the game thread only 1-6 ms per frame) |
+| Level 2 forest (1,000-1,300 draws per frame) | 26.3 on average, 24-28, short dips to 17-19 in the densest spots | GPU: 36-50 ms per frame |
+| The next part of a level streaming in | short dips to ~17 | the card's reads |
+
+Compared with 0.8.0 at the same clocks and by the same count: 27.3 fps on average instead of 24.9, and 15 % of the
+time under 24 fps instead of 43 %. What changed: the recompiled code keeps the guest's registers in the host's
+registers between calls ([gow2/CPU_OPTIMIZATION.md](gow2/CPU_OPTIMIZATION.md)).
+
+Clocks: overclocking the CPU to 1785 MHz is still required (the game thread is 70-90 % busy). In heavy scenes the GPU
+is now the limit, so a higher GPU clock (768 MHz) should give steadier frames there; not yet measured with 1.0.0.
+Over the runs the SoC stayed between 33 and 40 °C and the clocks never dropped.
+
+### 0.8.0 (for comparison)
+
+0.8.1 (level 2 forest with its trees, same clocks): 25.6-28.7 fps, GPU ~34 ms per frame.
 
 **Playable, but heavy: the yellow zone.** The level 1 garden and level 2 (Assault) were played on 2026-10-22, with the
 console handheld and the profiler's stack sampler off.
