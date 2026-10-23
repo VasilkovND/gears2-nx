@@ -32,7 +32,7 @@
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
-REXCVAR_DEFINE_BOOL(gow2_volcar_desconocidos, true, "Gears2",
+REXCVAR_DEFINE_BOOL(gow2_volcar_desconocidos, false, "Gears2",
                     "Escribir el microcodigo de cada shader que no se identifica en shaders_unknown/ (hasta 2000)");
 
 REXCVAR_DEFINE_BOOL(gow2_shaders_por_demanda, true, "Gears2",

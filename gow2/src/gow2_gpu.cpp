@@ -170,7 +170,7 @@ REXCVAR_DEFINE_INT32(gow2_arboles, 1, "Gears2",
 REXCVAR_DEFINE_BOOL(gow2_velocidad_sin_z, false, "Gears2",
                     "Prueba: los dibujos del buffer de velocidades (PS 1929EAB6BE60FA77) sin test de profundidad contra "
                     "la profundidad reducida (5A0, 640x360)");
-REXCVAR_DEFINE_BOOL(gow2_velocidad_prueba, true, "Gears2",
+REXCVAR_DEFINE_BOOL(gow2_velocidad_prueba, false, "Gears2",
                     "ZL+ZR+Right cambia gow2_velocidad_sin_z con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_BOOL(gow2_arboles_prueba, false, "Gears2",
                     "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");

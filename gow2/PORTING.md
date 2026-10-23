@@ -4,6 +4,44 @@ Gears of War 2 (Xbox 360, retail disc) on the Nintendo Switch, as a homebrew NRO
 carries over from Dead Space 2 ([ds2-nx](https://github.com/VasilkovND/ds2-nx), `deadspace2/PORTING.md`) and Dante's
 Inferno, and every problem met on the way.
 
+## 1.0.0: the game thread
+
+The game thread was 80-90 % busy in fights, and its profile was flat: Unreal's main loop and the UnrealScript
+interpreter over hundreds of small functions, no function above ~6 %. Most of its instructions were not the game's
+work but traffic through the context: every guest register is a field of `ctx`, every guest memory access goes
+through `base`, and with `-fno-strict-aliasing` (a byte store may alias anything) GCC reloaded each register after
+every guest store and stored it back after every write.
+
+`tools/patch_local_regs.py` (after `patch_inline_calls.py` in `codegen.sh`) gives each function local copies of the
+registers it uses and keeps `ctx` exact only where other code can look at it. Which registers a call or a return has
+to put back is not taken from the PowerPC calling convention: the game's compiler does not always follow it between
+its own functions (callers read volatile registers a callee keeps, a few functions take arguments in non-volatile
+ones). It is worked out over the whole program from the code: REF (what a function may read before writing it), MOD
+(what may differ in `ctx` when it returns), PRES (the non-volatiles it saves in its prologue and loads back before
+every return) and LIVEOUT (what its callers may read after it), each a fixpoint over the call graph. Only calls the
+code cannot see into are taken at the convention's word: indirect calls, the kernel's imports and the hooked
+functions. Saves and restores of registers nobody gets back are dropped. The NRO shrank from 76 to 64 MB; the hot
+functions do 20-45 % fewer memory accesses.
+
+`PLR_CHECK=1 tools/build_mac.sh` builds a check version: at each call it writes a numbered poison into the dirty
+registers the callee should not read and logs `[regcheck]` when a call changes a register the analysis says it keeps
+(`gow2/out/codegen/patch_local_regs.check.map` names the site). The first console build crashed at startup (a target
+of an indirect call left a clobbered non-volatile behind; fixed: such targets restore every non-volatile anything
+after the call may read).
+
+Measured (2026-10-23, levels 1 and 2, 26 minutes, handheld, CPU 1785 / GPU 614.4 / RAM 1600 MHz, stack sampler on):
+
+| | 0.8.0 (run 49, sampler off) | 1.0.0 |
+| --- | --- | --- |
+| Gameplay windows (>100 draws), average | 24.9 fps | 27.3 fps |
+| Windows under 24 fps | 43 % | 15 % |
+| Median / slowest 10 % (profile windows) | 26.1 / 19.5 fps | 29.9 / 24.1 fps |
+| GPU idle between jobs in heavy scenes | 6-12 ms per frame | 1-6 ms per frame |
+
+No errors, crashes or guest faults in the run. In fights the GPU is now the limit more often than the game thread.
+For the release, `gow2_volcar_desconocidos` (unknown shaders written to the card) and `gow2_velocidad_prueba` (a test
+hotkey) are off by default; the rest of the telemetry already runs only with `telemetria.flag`.
+
 ## Status (0.8.0)
 
 Playable on a console with the CPU overclocked (1785 MHz CPU, 768 MHz GPU): ~25 fps on average, 20-25 in fights, the
