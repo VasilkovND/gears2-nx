@@ -6,6 +6,8 @@ Inferno, and every problem met on the way.
 
 ## 1.0.0: the game thread
 
+The full account, with the pitfalls, the check build, how to measure and what is left: [CPU_OPTIMIZATION.md](CPU_OPTIMIZATION.md).
+
 The game thread was 80-90 % busy in fights, and its profile was flat: Unreal's main loop and the UnrealScript
 interpreter over hundreds of small functions, no function above ~6 %. Most of its instructions were not the game's
 work but traffic through the context: every guest register is a field of `ctx`, every guest memory access goes
