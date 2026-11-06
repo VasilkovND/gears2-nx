@@ -114,6 +114,7 @@ done
 STAMP="$CG/inputs.sha"
 INPUTS=$( (cat "$CG/game/default.xex" "$CG/gow2_manifest.toml" "$CG"/hints/*.toml "$REXGLUE" \
   "$PC"/tools/patch_switch_traps.py "$PC"/tools/patch_game_patches.py "$PC"/tools/patch_memory_barriers.py \
+  "$ROOT"/gow2/tools/patch_scene_resolution.py \
   "$PC"/tools/patch_spin_hints.py "$ROOT"/gow2/tools/patch_leaf_prologue.py \
   "$ROOT"/gow2/tools/patch_stack_access.py "$ROOT"/gow2/tools/patch_inline_calls.py \
   "$ROOT"/gow2/tools/patch_local_regs.py; echo "barriers=$BARRIERS localregs=$LOCALREGS check=${PLR_CHECK:-0}"
@@ -141,6 +142,9 @@ if [ "$(cat "$STAMP" 2>/dev/null)" != "$INPUTS" ] || [ ! -f "$CG/generated/defau
   # and Android builds always run without predicated tiling, and with it the Switch build drew no world at all.
   (cd "$ST" && python3 "$PC/tools/patch_game_patches.py" "generated/default/*.cpp") > "$CG/patch_game_patches.log"
   tail -1 "$CG/patch_game_patches.log"
+  # Ours: the 540p scene (id 8), sub_82806A80's hard-coded 720 and the 1280 width cap (gow2_resolution.h).
+  (cd "$ST" && python3 "$ROOT/gow2/tools/patch_scene_resolution.py" "generated/default/*.cpp") > "$CG/patch_scene_resolution.log"
+  tail -1 "$CG/patch_scene_resolution.log"
   if [ "$BARRIERS" = 1 ]; then
     (cd "$ST" && python3 "$PC/tools/patch_memory_barriers.py" generated/default/*.cpp) > "$CG/patch_memory_barriers.log"
     tail -3 "$CG/patch_memory_barriers.log"

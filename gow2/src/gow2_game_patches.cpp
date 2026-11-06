@@ -8,8 +8,13 @@
 // Off by default (PC improvements that cost GPU time or memory here):
 //   2  texture streaming pool 196 MB, 3 16x anisotropic filtering, 4 unlocked frame rate, 5 / 6 ambient occlusion and
 //      depth of field fixes for resolutions above 720p, 7 widescreen (back buffer width; 0 = the game's own 16:9).
+// Ours (gow2/tools/patch_scene_resolution.py):
+//   8  the 540p scene (gow2_resolution.h): sub_82806A80's hard-coded height 720 and its 1280 width cap become
+//      540 / 960 when that is the choice; the width is the aspect times the height, so 16:9 keeps its shape.
 
 #include <rex/cvar.h>
+
+#include "gow2_resolution.h"
 
 REXCVAR_DEFINE_BOOL(gow2_parche_sin_teselas, true, "Gears2",
                     "GUseTilingMode = FALSE: el juego dibuja la escena de una vez, sin predicated tiling (parche 1)");
@@ -30,6 +35,7 @@ extern "C" int Gow2GamePatch(int id) {
     case 4: return REXCVAR_GET(gow2_parche_sin_limite_fps);
     case 5: return REXCVAR_GET(gow2_parche_ao);
     case 6: return REXCVAR_GET(gow2_parche_dof);
+    case 8: return gow2::resolucion::Elegida() == 540;  // the launch choice (gow2_resolution.h)
     default: return 0;  // 7: the game's own 16:9
   }
 }
