@@ -28,6 +28,7 @@
 
 #include "gow2_cpu.h"
 #include "gow2_gpu.h"
+#include "gow2_resolution.h"
 
 REXCVAR_DEFINE_STRING(gow2_game, "", "Gears2", "Carpeta del juego (disco extraido). Vacio: game/ junto al ejecutable.");
 
@@ -86,7 +87,11 @@ class Gears2App : public rex::ReXApp {
     REXLOG_INFO("gow2: game at {}; loading {}", root.string(), xex_image);
   }
 
-  void OnPreLaunchModule() override { gow2::cpu::Configurar(); }
+  // The scene resolution first: the game asks the OS for the display mode while it sets up its renderer.
+  void OnPreLaunchModule() override {
+    gow2::resolucion::Aplicar();
+    gow2::cpu::Configurar();
+  }
 
  private:
   [[noreturn]] static void Fail(const std::string& msg) {
