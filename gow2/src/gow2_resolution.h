@@ -63,6 +63,9 @@ inline uint32_t CpuMhz() {
 #endif
 }
 
+// The choice that applies: the saved one, else the default (PorDefecto, gow2_resolution.cpp).
+uint32_t Elegida();
+
 // Set the choice before the game sets up its renderer (gow2_app.h: OnPreLaunchModule).
 void Aplicar();
 

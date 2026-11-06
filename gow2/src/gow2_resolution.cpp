@@ -30,6 +30,11 @@ uint32_t PorDefecto() {
 
 }  // namespace
 
+uint32_t Elegida() {
+  const uint32_t guardada = Guardada();
+  return guardada ? guardada : PorDefecto();
+}
+
 void Aplicar() {
   const uint32_t guardada = Guardada();
   const uint32_t elegida = guardada ? guardada : PorDefecto();

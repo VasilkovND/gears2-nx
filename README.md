@@ -97,8 +97,9 @@ sdmc:/switch/gears2-nx/
     shadercache_dksh.bin      gow2/out/shaders/
     game/                     the extracted disc (default.xex, GearGame/), by stage_sd.py
     gow2_resolucion.txt       optional: "720" or "540" — the scene resolution at the next start
-                              (as ds2-nx). Without it: 720p from a 1.5 GHz CPU clock up (an overclocked
-                              console), else 960x540 for stock clocks; also gow2_resolucion in gow2.toml
+                              (written by the options menu, ZL + ZR + Minus; as ds2-nx). Without it:
+                              720p from a 1.5 GHz CPU clock up (an overclocked console), else 960x540
+                              for stock clocks; also gow2_resolucion in gow2.toml
     telemetria.flag           optional, debugging only
 ```
 
