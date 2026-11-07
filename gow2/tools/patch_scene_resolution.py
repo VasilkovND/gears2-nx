@@ -21,8 +21,10 @@ import re
 import sys
 
 FSTART = 0x82806A80
+FMENU = 0x828041A8
 MARK = "// GOW2 SCENE"
 P = r"(?:ctx\.|L_)"  # a register prefix, either stage of the generated code
+DECL = f'extern "C" int Gow2GamePatch(int id);  // {MARK}\n'
 
 
 def rewrite(li720: str, lfs: list[str], li1280: str):
@@ -47,6 +49,43 @@ def rewrite(li720: str, lfs: list[str], li1280: str):
     return (new1, new2, new3), None
 
 
+def escribir(f: str, lines: list[str]) -> None:
+    """Write back, adding the Gow2GamePatch declaration a file that now calls it needs."""
+    if DECL not in "".join(lines[:2]):
+        lines.insert(0, DECL)
+    tmp = f + ".sr.tmp"
+    with open(tmp, "w", errors="replace", newline="") as fh:
+        fh.writelines(lines)
+    os.replace(tmp, f)
+
+
+def menu_patch(lines: list[str]) -> tuple[bool, str]:
+    """The menu / back buffer layer: sub_828041A8 reads the display-mode table (rdata 0x82094010, entries
+    {1280,720} for the 720p mode) and hands the size to the D3D setup, so the menu's UI surfaces stayed
+    1280x720 over the 960x540 scene and were cropped 1:1 in the composite. Clamp the two loads: the exact
+    1280/720 pair is the 720p mode, the other entries (0x100..0x200) are left alone."""
+    start = next((i for i, l in enumerate(lines) if l.startswith(f"DEFINE_REX_FUNC(sub_{FMENU:08X})")), None)
+    if start is None:
+        return False, ""
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("DEFINE_REX_FUNC")), len(lines))
+    j = next((i for i in range(start + 1, end) if lines[i].strip() == "// lwzx r4,r6,r8"), None)
+    if j is None:
+        return False, f"'lwzx r4,r6,r8' not found in sub_{FMENU:08X}"
+    got = lines[j + 1].strip()
+    m = re.fullmatch(P + r"r4\.u64 = REX_LOAD_U32\(" + P + r"r6\.u32 \+ " + P + r"r8\.u32\);", got)
+    if not m:
+        return False, f"'lwzx r4,r6,r8': body mismatch {got!r}"
+    if MARK in lines[j + 2]:
+        return False, ""  # already patched
+    v = "ctx." if got.startswith("ctx.") else "L_"
+    clamp = (f"if (Gow2GamePatch(8)) {{ if ({v}r4.u32 == 1280) {v}r4.u32 = 960; "
+             f"if ({v}r5.u32 == 720) {v}r5.u32 = 540; }}")
+    indent = re.match(r"\s*", lines[j + 1]).group(0)
+    nl = "\r\n" if lines[j + 1].endswith("\r\n") else "\n"
+    lines[j + 2:j + 2] = [f"{indent}{clamp}  {MARK}{nl}"]
+    return True, ""
+
+
 def main(argv: list[str]) -> int:
     files: list[str] = []
     for a in argv:
@@ -55,9 +94,19 @@ def main(argv: list[str]) -> int:
     for f in files:
         with open(f, errors="replace", newline="") as fh:
             lines = fh.readlines()
+        changed = False
+        menu, err = menu_patch(lines)
+        if err:
+            print(f"patch_scene_resolution: {err}")
+            return 1
+        if menu:
+            changed = True
+            done += 1
         start = next((i for i, l in enumerate(lines)
                       if l.startswith(f"DEFINE_REX_FUNC(sub_{FSTART:08X})")), None)
         if start is None:
+            if changed:
+                escribir(f, lines)
             continue
         end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("DEFINE_REX_FUNC")),
                    len(lines))
@@ -84,10 +133,8 @@ def main(argv: list[str]) -> int:
         put(j["li r11,1280"], 1, new[2])
         put(j["lfs f0,2904(r10)"], 3, new[1])
         put(j["li r11,720"], 1, new[0])
-        tmp = f + ".sr.tmp"
-        with open(tmp, "w", errors="replace", newline="") as fh:
-            fh.writelines(lines)
-        os.replace(tmp, f)
+        changed = True
+        escribir(f, lines)
         done += 1
     print(f"patch_scene_resolution: {done} site(s) patched")
     return 0
