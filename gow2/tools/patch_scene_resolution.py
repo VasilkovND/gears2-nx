@@ -21,10 +21,18 @@ import re
 import sys
 
 FSTART = 0x82806A80
-FMENU = 0x828041A8
 MARK = "// GOW2 SCENE"
 P = r"(?:ctx\.|L_)"  # a register prefix, either stage of the generated code
-DECL = f'extern "C" int Gow2GamePatch(int id);  // {MARK}\n'
+DECL = f'extern "C" int Gow2GamePatch(int id);  {MARK}\n'
+
+# The display-mode table reads that build the menu / back buffer surfaces: the anchor is the last table
+# load's instruction comment; the width and height registers are clamped after it.
+# (function, anchor comment, width register, height register)
+MENU_SITES = [
+    (0x828041A8, "// lwzx r4,r6,r8", "r4", "r5"),    # the parameters handed to the D3D setup
+    (0x828041A8, "// lwzx r11,r11,r29", "r11", "r20"),  # loc_828043A0: the same table, a second read
+    (0x82803C90, "// lwz r7,0(r11)", "r10", "r7"),   # the whole-table scan: r10 the width, r7 the height
+]
 
 
 def rewrite(li720: str, lfs: list[str], li1280: str):
@@ -59,31 +67,35 @@ def escribir(f: str, lines: list[str]) -> None:
     os.replace(tmp, f)
 
 
-def menu_patch(lines: list[str]) -> tuple[bool, str]:
-    """The menu / back buffer layer: sub_828041A8 reads the display-mode table (rdata 0x82094010, entries
-    {1280,720} for the 720p mode) and hands the size to the D3D setup, so the menu's UI surfaces stayed
-    1280x720 over the 960x540 scene and were cropped 1:1 in the composite. Clamp the two loads: the exact
-    1280/720 pair is the 720p mode, the other entries (0x100..0x200) are left alone."""
-    start = next((i for i, l in enumerate(lines) if l.startswith(f"DEFINE_REX_FUNC(sub_{FMENU:08X})")), None)
-    if start is None:
-        return False, ""
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("DEFINE_REX_FUNC")), len(lines))
-    j = next((i for i in range(start + 1, end) if lines[i].strip() == "// lwzx r4,r6,r8"), None)
-    if j is None:
-        return False, f"'lwzx r4,r6,r8' not found in sub_{FMENU:08X}"
-    got = lines[j + 1].strip()
-    m = re.fullmatch(P + r"r4\.u64 = REX_LOAD_U32\(" + P + r"r6\.u32 \+ " + P + r"r8\.u32\);", got)
-    if not m:
-        return False, f"'lwzx r4,r6,r8': body mismatch {got!r}"
-    if MARK in lines[j + 2]:
-        return False, ""  # already patched
-    v = "ctx." if got.startswith("ctx.") else "L_"
-    clamp = (f"if (Gow2GamePatch(8)) {{ if ({v}r4.u32 == 1280) {v}r4.u32 = 960; "
-             f"if ({v}r5.u32 == 720) {v}r5.u32 = 540; }}")
-    indent = re.match(r"\s*", lines[j + 1]).group(0)
-    nl = "\r\n" if lines[j + 1].endswith("\r\n") else "\n"
-    lines[j + 2:j + 2] = [f"{indent}{clamp}  {MARK}{nl}"]
-    return True, ""
+def menu_patch(lines: list[str]) -> tuple[int, str]:
+    """The menu / back buffer layer: the D3D setup reads the display-mode table (rdata 0x82094010, the 720p
+    entry {1280,720}) in three places, and the surfaces built from it stayed 1280x720 over the 960x540 scene,
+    so the menu was cropped 1:1 in the composite. Clamp every read: the exact 1280/720 pair is the 720p mode,
+    the other entries (0x100..0x200) are left alone. (The 1280x720 k_8 textures beside them are Bink video
+    planes straight from the .bik header — those are not touched.)"""
+    n = 0
+    for fn, comment, rw, rh in MENU_SITES:
+        start = next((i for i, l in enumerate(lines) if l.startswith(f"DEFINE_REX_FUNC(sub_{fn:08X})")), None)
+        if start is None:
+            continue
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("DEFINE_REX_FUNC")),
+                   len(lines))
+        j = next((i for i in range(start + 1, end) if lines[i].strip() == comment), None)
+        if j is None or j + 1 >= end:
+            return 0, f"'{comment}' not found in sub_{fn:08X}"
+        got = lines[j + 1].strip()
+        if not re.fullmatch(P + r"r\d+\.u64 = REX_LOAD_U32\(.*\);", got):
+            return 0, f"'{comment}': body mismatch {got!r}"
+        if j + 2 < end and MARK in lines[j + 2]:
+            continue  # already patched
+        v = "ctx." if got.startswith("ctx.") else "L_"
+        clamp = (f"if (Gow2GamePatch(8)) {{ if ({v}{rw}.u32 == 1280) {v}{rw}.u32 = 960; "
+                 f"if ({v}{rh}.u32 == 720) {v}{rh}.u32 = 540; }}")
+        indent = re.match(r"\s*", lines[j + 1]).group(0)
+        nl = "\r\n" if lines[j + 1].endswith("\r\n") else "\n"
+        lines[j + 2:j + 2] = [f"{indent}{clamp}  {MARK}{nl}"]
+        n += 1
+    return n, ""
 
 
 def main(argv: list[str]) -> int:
