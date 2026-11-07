@@ -2,11 +2,12 @@
 // presented on the 1280x720 back buffer as usual). 960x540 is for stock clocks: the GPU does about 56 % of the pixel
 // work, and fights were GPU-bound at 307.2 MHz.
 //
-// The choice turns game patch 8 on (gow2_game_patches.cpp: sub_82806A80 builds the scene with the height hard-coded
-// at 720 and the width clamped to 1280; tools/patch_scene_resolution.py turns both into 540 / 960). The video mode
-// the OS reports only gives the game its aspect: the SDK's video_mode_width / video_mode_height change the D3D
-// outputs alone, not the scene (tried first; the game stayed at 1280x720). As in ds2-nx
-// (deadspace2/src/ds2_resolution.h, there through a hook on the EARS engine's own scene-size write).
+// The choice needs both halves (gow2_resolution.cpp): game patch 8 (gow2_game_patches.cpp: sub_82806A80 builds
+// the scene with the height hard-coded at 720 and the width clamped to 1280; tools/patch_scene_resolution.py
+// turns both into 540 / 960) for the scene and its targets, and the SDK's video_mode_width / video_mode_height
+// for the layers that read the display mode the OS reports (the UI / back buffer textures, hard 1280x720 without
+// it — the cvars alone leave the scene at 1280x720, and the scene alone crops the game's own composite). As in
+// ds2-nx (deadspace2/src/ds2_resolution.h, there through a hook on the EARS engine's own scene-size write).
 //
 // What decides, first that is set: gow2_resolucion.txt beside the NRO ("720" or "540"), then gow2_resolucion in
 // gow2.toml (720 or 540), then the CPU clock: 720 from 1.5 GHz up (an overclocked console), else 540. Applies at

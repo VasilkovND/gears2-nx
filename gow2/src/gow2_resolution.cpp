@@ -1,13 +1,15 @@
-// gears2 - applying the launch scene resolution (gow2_resolution.h). The choice turns game patch 8 on
-// (gow2_game_patches.cpp: sub_82806A80's hard-coded height 720 and its 1280 width cap become 540 / 960,
-// tools/patch_scene_resolution.py), which is read while the game builds its renderer, and the tile math in the
-// same function re-reads the globals it writes, so pitch, scissor and EDRAM stay consistent. The D3D back
-// buffer stays 1280x720 and the game scales its 960x540 scene onto it as it always scales its scene sizes.
+// gears2 - applying the launch scene resolution (gow2_resolution.h). Two things have to agree at 960x540, or the
+// game's own composite crops: game patch 8 (gow2_game_patches.cpp: sub_82806A80's hard-coded height 720 and its
+// 1280 width cap, tools/patch_scene_resolution.py) for the scene and its targets, and the SDK's video_mode_width /
+// video_mode_height for the layers that read the display mode the OS reports (VdQueryVideoMode /
+// VdGetCurrentDisplayInformation: the UI / back buffer textures, hard 1280x720 without it — with the scene alone
+// patched, the game copied its 1280x720 UI 1:1 onto the 960x540 frame and the right and bottom were lost).
 
 #include <cstdint>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/ui/flags.h>
 
 #include "gow2_resolution.h"
 
@@ -36,6 +38,10 @@ uint32_t Elegida() {
 }
 
 void Aplicar() {
+  if (Elegida() == 540) {
+    REXCVAR_SET(video_mode_width, 960);
+    REXCVAR_SET(video_mode_height, 540);
+  }
   REXLOG_INFO("gow2: escena {}p ({}; CPU {} MHz)", Elegida(),
               Guardada() ? "guardada en gow2_resolucion.txt" : "por defecto", CpuMhz());
 }
