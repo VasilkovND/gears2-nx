@@ -13,6 +13,7 @@
 //      540 / 960 when that is the choice; the width is the aspect times the height, so 16:9 keeps its shape.
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 
 #include "gow2_resolution.h"
 
@@ -38,4 +39,14 @@ extern "C" int Gow2GamePatch(int id) {
     case 8: return gow2::resolucion::Elegida() == 540;  // the launch choice (gow2_resolution.h)
     default: return 0;  // 7: the game's own 16:9
   }
+}
+
+// The D3D surface setup traced while the menu crop was chased (tools/patch_scene_resolution.py's DIAG_SITES):
+// a few calls' arguments, to tell where a surface size the renderer sees comes from. Not free, so capped.
+extern "C" void Gow2DiagSuperficie(uint32_t sitio, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e,
+                                   double f1) {
+  static uint32_t llamadas = 0;
+  if (llamadas >= 60) return;
+  ++llamadas;
+  REXLOG_INFO("GOW2 DIAG {:08X}: {:X} {:X} {:X} {:X} {:X} f1={}", sitio, a, b, c, d, e, f1);
 }
