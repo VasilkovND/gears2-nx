@@ -24,12 +24,6 @@ FSTART = 0x82806A80
 MARK = "// GOW2 SCENE"
 P = r"(?:ctx\.|L_)"  # a register prefix, either stage of the generated code
 DECL = f'extern "C" int Gow2GamePatch(int id);  {MARK}\n'
-DECL_DIAG = (f'extern "C" void Gow2DiagSuperficie(unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, '
-             f'double);  {MARK}\n')
-
-# While the menu crop was chased: trace the D3D surface setup's arguments (Gow2DiagSuperficie in
-# gow2_game_patches.cpp caps the log). The anchor is the prologue's "mflr r12".
-DIAG_SITES = [0x8298A128, 0x82988F50]
 
 # The display-mode table reads that build the menu / back buffer surfaces: the anchor is the last table
 # load's instruction comment; the width and height registers are clamped after it.
@@ -63,34 +57,9 @@ def rewrite(li720: str, lfs: list[str], li1280: str):
     return (new1, new2, new3), None
 
 
-def diag_patch(lines: list[str]) -> tuple[int, str]:
-    """Insert a Gow2DiagSuperficie call at the prologue of the D3D surface-setup functions."""
-    n = 0
-    for fn in DIAG_SITES:
-        start = next((i for i, l in enumerate(lines) if l.startswith(f"DEFINE_REX_FUNC(sub_{fn:08X})")), None)
-        if start is None:
-            continue
-        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("DEFINE_REX_FUNC")), len(lines))
-        j = next((i for i in range(start + 1, end) if lines[i].strip() == "// mflr r12"), None)
-        if j is None or j + 1 >= end or not re.fullmatch(P + r"r12\.u64 = " + P + r"lr;", lines[j + 1].strip()):
-            return 0, f"prologue not found in sub_{fn:08X}"
-        if MARK in lines[j + 2]:
-            continue  # already patched
-        v = "ctx." if lines[j + 1].strip().startswith("ctx.") else "L_"
-        call = (f"Gow2DiagSuperficie({fn}u, {v}r3.u32, {v}r4.u32, {v}r5.u32, {v}r6.u32, "
-                f"{v}{'r8' if fn == 0x82988F50 else 'r7'}.u32, {v}f1.f64)")
-        indent = re.match(r"\s*", lines[j + 1]).group(0)
-        nl = "\r\n" if lines[j + 1].endswith("\r\n") else "\n"
-        lines[j + 2:j + 2] = [f"{indent}{call};  {MARK}{nl}"]
-        n += 1
-    return n, ""
-
-
 def escribir(f: str, lines: list[str]) -> None:
-    """Write back, adding the declarations a file that now calls Gow2GamePatch / Gow2DiagSuperficie needs."""
-    if any(MARK in l and "Gow2DiagSuperficie(" in l for l in lines) and DECL_DIAG not in "".join(lines[:3]):
-        lines.insert(0, DECL_DIAG)
-    if DECL not in "".join(lines[:3]):
+    """Write back, adding the Gow2GamePatch declaration a file that now calls it needs."""
+    if DECL not in "".join(lines[:2]):
         lines.insert(0, DECL)
     tmp = f + ".sr.tmp"
     with open(tmp, "w", errors="replace", newline="") as fh:
@@ -138,13 +107,6 @@ def main(argv: list[str]) -> int:
         with open(f, errors="replace", newline="") as fh:
             lines = fh.readlines()
         changed = False
-        diag, err = diag_patch(lines)
-        if err:
-            print(f"patch_scene_resolution: {err}")
-            return 1
-        if diag:
-            changed = True
-            done += 1
         menu, err = menu_patch(lines)
         if err:
             print(f"patch_scene_resolution: {err}")
