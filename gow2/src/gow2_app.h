@@ -16,6 +16,9 @@
 #include <rex/runtime.h>
 #include <rex/system.h>
 
+#include <toml++/toml.hpp>
+
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -28,6 +31,101 @@
 
 #include "gow2_cpu.h"
 #include "gow2_gpu.h"
+
+namespace gow2 {
+
+struct LanguageConfig {
+  uint32_t user_language = 5;
+  uint32_t user_country = 71;
+};
+
+inline bool IsSupportedLanguage(uint32_t language) {
+  switch (language) {
+    case 1:
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+    case 11:
+    case 12:
+      return true;
+    default:
+      return false;
+  }
+}
+
+inline bool IsSupportedCountry(uint32_t country) { return country == 31 || country == 71; }
+
+inline LanguageConfig ParseLanguageConfig(const toml::table& root) {
+  LanguageConfig config;
+  const auto* language = root.get_as<toml::table>("language");
+  if (!language) {
+    if (root.get("language")) {
+      REXLOG_WARN("gow2: [language] must be a TOML table; using default language and country");
+    }
+    return config;
+  }
+
+  const auto read_setting = [language](std::string_view key, uint32_t fallback) {
+    const auto* node = language->get(key);
+    if (!node) {
+      return fallback;
+    }
+    const auto value = node->value<int64_t>();
+    if (!value || *value < 0 || static_cast<uint64_t>(*value) > UINT32_MAX) {
+      REXLOG_WARN("gow2: [language].{} must be a non-negative 32-bit integer; using {}", key, fallback);
+      return fallback;
+    }
+    return static_cast<uint32_t>(*value);
+  };
+
+  config.user_language = read_setting("user_language", config.user_language);
+  if (!IsSupportedLanguage(config.user_language)) {
+    REXLOG_WARN("gow2: unsupported user_language {}; using 5", config.user_language);
+    config.user_language = 5;
+  }
+
+  config.user_country = read_setting("user_country", config.user_country);
+  if (!IsSupportedCountry(config.user_country)) {
+    REXLOG_WARN("gow2: unsupported user_country {}; using 71", config.user_country);
+    config.user_country = 71;
+  }
+  return config;
+}
+
+inline void ApplyLanguageConfig(const std::filesystem::path& path) {
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(path, ec);
+  if (ec) {
+    REXLOG_WARN("gow2: cannot check language config {}: {}; using defaults", path.string(), ec.message());
+  } else if (!exists) {
+    return;
+  }
+
+  LanguageConfig config;
+  if (!ec) {
+    try {
+      config = ParseLanguageConfig(toml::parse_file(path.string()));
+    } catch (const toml::parse_error& error) {
+      REXLOG_WARN("gow2: cannot parse language config {}: {}; using defaults", path.string(), error.what());
+    }
+  }
+
+  const bool language_set =
+      rex::cvar::SetFlagByName("user_language", std::to_string(config.user_language));
+  const bool country_set =
+      rex::cvar::SetFlagByName("user_country", std::to_string(config.user_country));
+  if (!language_set) {
+    REXLOG_WARN("gow2: could not apply user_language from {}", path.string());
+  }
+  if (!country_set) {
+    REXLOG_WARN("gow2: could not apply user_country from {}", path.string());
+  }
+}
+
+}  // namespace gow2
 
 REXCVAR_DEFINE_STRING(gow2_game, "", "Gears2", "Carpeta del juego (disco extraido). Vacio: game/ junto al ejecutable.");
 
@@ -57,13 +155,15 @@ class Gears2App : public rex::ReXApp {
 
   // game_data_root is the folder with default.xex (ConstructRuntime checks it).
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    const auto folder = rex::filesystem::GetExecutableFolder();
+    if (!folder.empty()) gow2::ApplyLanguageConfig(folder / "gears2-nx.toml");
+
     if (!paths.game_data_root.empty()) return;
     const std::string flag = REXCVAR_GET(gow2_game);
     if (!flag.empty()) {
       paths.game_data_root = flag;
       return;
     }
-    const auto folder = rex::filesystem::GetExecutableFolder();
     if (!folder.empty()) paths.game_data_root = folder / "game";
   }
 

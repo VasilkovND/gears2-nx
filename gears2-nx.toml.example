@@ -1,0 +1,6 @@
+[language]
+# Language IDs are listed in docs/LANGUAGES.md.
+user_language = 5
+
+# Country IDs: Mexico = 71, Spain = 31.
+user_country = 71

@@ -83,3 +83,36 @@ if(REXGLUE_PLATFORM_SWITCH)
         AUTHOR "VasilkovND"
         VERSION "${GOW2_VERSION}")
 endif()
+
+add_executable(gow2-unlock-test
+    src/main.cpp
+    src/gow2_gpu.cpp
+    src/gow2_shaders.cpp
+    src/gow2_game_patches.cpp
+    src/gow2_unlock_test.cpp
+    src/gow2_memory_hooks.cpp
+    src/gow2_guards.cpp
+    src/gow2_perf_hooks.cpp
+    src/gow2_cpu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/ds_shader_library.cpp
+)
+
+gow2_setup_target(gow2-unlock-test)
+rexglue_switch_add_deko3d(gow2-unlock-test)
+target_compile_definitions(gow2-unlock-test PRIVATE GOW2_DEKO3D=1)
+target_link_libraries(gow2-unlock-test PRIVATE mspack)
+target_include_directories(gow2-unlock-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../shaders ${REXSDK_DIR}/thirdparty/xxHash)
+
+if(GOW2_NAMES MATCHES "\nname = \"gow2_D3DDevice_CreateVertexShader\"" AND
+   GOW2_NAMES MATCHES "\nname = \"gow2_D3DDevice_CreatePixelShader\"")
+    target_sources(gow2-unlock-test PRIVATE src/gow2_shader_dump.cpp)
+endif()
+
+target_compile_definitions(gow2-unlock-test PRIVATE GOW2_VERSION="${GOW2_VERSION}" GOW2_COMMIT="${GOW2_COMMIT}")
+
+if(REXGLUE_PLATFORM_SWITCH)
+    rexglue_switch_add_nro(gow2-unlock-test
+        NAME "Gears of War 2 Unlock Test"
+        AUTHOR "VasilkovND"
+        VERSION "${GOW2_VERSION}")
+endif()
